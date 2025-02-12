@@ -7,3 +7,17 @@ diff_rasterization/dist
 tensorboard_3d
 screenshots
 .idea
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ico
+pretrained_weights
+*.pth
+*.pt
+*.pth.tar
+*.pt.tar
+*.pth.tar.gz
+*.pt.tar.gz
