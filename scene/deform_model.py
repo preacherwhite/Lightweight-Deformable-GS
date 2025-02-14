@@ -49,9 +49,11 @@ class DeformModel:
                 lr = self.deform_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
-USE_SPUNET = False
+USE_SPUNET = True
 USE_PTV3= False
-USE_PONDER = True
+USE_PONDER = False
+FREEZE_ENCODER = True
+PRETRAIN = True
 class SetDeformModel:
     def __init__(self):
         if USE_PONDER:
@@ -67,66 +69,98 @@ class SetDeformModel:
                                             norm_decouple=True,
                                             norm_adaptive=False,
                                             norm_affine=True).cuda()
-            # Load pretrained weights for backbone
-            backbone_ckpt = torch.load('/media/staging2/dhwang/Lightweight-Deformable-GS/pretrained_weights/ponderv2-ppt-pretrain-scannet-s3dis-structured3d.pth', weights_only=False)
-            new_state_dict = {k.replace('module.backbone.', ''): v for k, v in backbone_ckpt['state_dict'].items()}
-            # pop "module.logit_scale", "module.class_embedding", "module.embedding_table.weight", "module.proj_head.weight", "module.proj_head.bias". 
-            new_state_dict.pop('module.logit_scale', None)
-            new_state_dict.pop('module.class_embedding', None)
-            new_state_dict.pop('module.embedding_table.weight', None)
-            new_state_dict.pop('module.proj_head.weight', None)
-            new_state_dict.pop('module.proj_head.bias', None)
-            #popo all the keys that include modulation
-            for k in list(new_state_dict.keys()):
-                if 'modulation' in k:
-                    new_state_dict.pop(k)
-            for k in list(new_state_dict.keys()):
-                if k.startswith('module.ponder_decoder.'):
-                    new_state_dict.pop(k)
-            stem_weight = new_state_dict['conv_input.conv.weight']
-            # Take first 3 channels and expand to 4 with random values
-            stem_weight_3ch = stem_weight[...,:3]
-            random_ch = torch.randn_like(stem_weight_3ch[...,:1])
-            new_state_dict['conv_input.conv.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
-            self.deform.load_state_dict(new_state_dict)
-            print("Loaded pretrained weights for deform model")
+            if PRETRAIN:
+                # Load pretrained weights for backbone
+                backbone_ckpt = torch.load('/media/staging2/dhwang/Lightweight-Deformable-GS/pretrained_weights/ponderv2-ppt-pretrain-scannet-s3dis-structured3d.pth', weights_only=False)
+                new_state_dict = {k.replace('module.backbone.', ''): v for k, v in backbone_ckpt['state_dict'].items()}
+                # pop "module.logit_scale", "module.class_embedding", "module.embedding_table.weight", "module.proj_head.weight", "module.proj_head.bias". 
+                new_state_dict.pop('module.logit_scale', None)
+                new_state_dict.pop('module.class_embedding', None)
+                new_state_dict.pop('module.embedding_table.weight', None)
+                new_state_dict.pop('module.proj_head.weight', None)
+                new_state_dict.pop('module.proj_head.bias', None)
+                #popo all the keys that include modulation
+                for k in list(new_state_dict.keys()):
+                    if 'modulation' in k:
+                        new_state_dict.pop(k)
+                for k in list(new_state_dict.keys()):
+                    if k.startswith('module.ponder_decoder.'):
+                        new_state_dict.pop(k)
+                stem_weight = new_state_dict['conv_input.conv.weight']
+                # Take first 3 channels and expand to 4 with random values
+                stem_weight_3ch = stem_weight[...,:3]
+                random_ch = torch.randn_like(stem_weight_3ch[...,:1])
+                new_state_dict['conv_input.conv.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
+                self.deform.load_state_dict(new_state_dict)
+                print("Loaded pretrained weights for deform model")
+            if FREEZE_ENCODER:
+                print("Freezing encoder")
+                # Look for all parameters that include enc.
+                for param in self.deform.parameters():
+                    if 'enc' in param.name:
+                        print(param.name)
+                        param.requires_grad = False
         if USE_SPUNET:
             self.deform = SpUNetBaseWrap(in_channels=4,num_classes=0 ).cuda()
-            backbone_ckpt = torch.load('/media/staging2/dhwang/Lightweight-Deformable-GS/pretrained_weights/spunet/model/model_last.pth', weights_only=False)
-            new_state_dict = {k.replace('module.backbone.', ''): v for k, v in backbone_ckpt['state_dict'].items()}
-            new_state_dict.pop('module.mask_token', None)
-            new_state_dict.pop('module.color_head.weight', None)
-            new_state_dict.pop('module.color_head.bias', None)
-            stem_weight = new_state_dict['conv_input.0.weight']
-            # Take first 3 channels and expand to 4 with random values
-            stem_weight_3ch = stem_weight[...,:3]
-            random_ch = torch.randn_like(stem_weight_3ch[...,:1])
-            new_state_dict['conv_input.0.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
-            self.deform.load_state_dict(new_state_dict)
-            print("Loaded pretrained weights for deform model")
+            if PRETRAIN:
+                backbone_ckpt = torch.load('/media/staging2/dhwang/Lightweight-Deformable-GS/pretrained_weights/spunet/model/model_last.pth', weights_only=False)
+                new_state_dict = {k.replace('module.backbone.', ''): v for k, v in backbone_ckpt['state_dict'].items()}
+                new_state_dict.pop('module.mask_token', None)
+                new_state_dict.pop('module.color_head.weight', None)
+                new_state_dict.pop('module.color_head.bias', None)
+                # Remove segmentation head parameters since we don't need them
+                new_state_dict.pop('module.seg_head.weight', None)
+                new_state_dict.pop('module.seg_head.bias', None)
+                new_state_dict.pop('module.logit_scale', None)
+                new_state_dict.pop('module.class_embedding', None)
+                new_state_dict.pop('module.embedding_table.weight', None)
+                new_state_dict.pop('module.proj_head.weight', None)
+                new_state_dict.pop('module.proj_head.bias', None)
+                new_state_dict.pop('final.weight', None)
+                new_state_dict.pop('final.bias', None)
+                stem_weight = new_state_dict['conv_input.0.weight']
+                # Take first 3 channels and expand to 4 with random values
+                stem_weight_3ch = stem_weight[...,:3]
+                random_ch = torch.randn_like(stem_weight_3ch[...,:1])
+                new_state_dict['conv_input.0.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
+                self.deform.load_state_dict(new_state_dict)
+                print("Loaded pretrained weights for deform model")
+            if FREEZE_ENCODER:
+                # Look for all parameters that include enc.
+                for name, param in self.deform.named_parameters():
+                    if 'enc' in name:
+                        param.requires_grad = False
         if USE_PTV3:
             self.deform = PointTransformerV3().cuda()
             # Load pretrained weights for backbone
-            backbone_ckpt = torch.load('/media/staging2/dhwang/Lightweight-Deformable-GS/pretrained_weights/spunet/model/model_last.pth', weights_only=False)
-            new_state_dict = {k.replace('module.backbone.', ''): v for k, v in backbone_ckpt['state_dict'].items()}
-            # Verify shape of embedding stem conv weight
-            stem_weight = new_state_dict['embedding.stem.conv.weight']
-            # Take first 3 channels and expand to 4 with random values
-            stem_weight_3ch = stem_weight[...,:3]
-            random_ch = torch.randn_like(stem_weight_3ch[...,:1])
-            new_state_dict['embedding.stem.conv.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
+            # Commented out version is using scannet semantic segmentation pretrained model
+            #backbone_ckpt = torch.load('/media/staging2/dhwang/Lightweight-Deformable-GS/pretrained_weights/spunet/model/model_last.pth', weights_only=False)
+            # Here we use pretrained model for MSC
+            if PRETRAIN:
+                backbone_ckpt = torch.load('/media/staging2/dhwang/Pointcept/exp/scannet/pretrain-msc-v1m1-0-ptv3-base/model/model_last.pth', weights_only=False)
+                new_state_dict = {k.replace('module.backbone.', ''): v for k, v in backbone_ckpt['state_dict'].items()}
+                # Verify shape of embedding stem conv weight
+                stem_weight = new_state_dict['embedding.stem.conv.weight']
+                # Take first 3 channels and expand to 4 with random values
+                stem_weight_3ch = stem_weight[...,:3]
+                random_ch = torch.randn_like(stem_weight_3ch[...,:1])
+                new_state_dict['embedding.stem.conv.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
 
-            # Remove segmentation head parameters since we don't need them
-            new_state_dict.pop('module.seg_head.weight', None)
-            new_state_dict.pop('module.seg_head.bias', None)
-            new_state_dict.pop('module.logit_scale', None)
-            new_state_dict.pop('module.class_embedding', None)
-            new_state_dict.pop('module.embedding_table.weight', None)
-            new_state_dict.pop('module.proj_head.weight', None)
-            new_state_dict.pop('module.proj_head.bias', None)
+                # Remove segmentation head parameters since we don't need them
+                new_state_dict.pop('module.seg_head.weight', None)
+                new_state_dict.pop('module.seg_head.bias', None)
+                new_state_dict.pop('module.logit_scale', None)
+                new_state_dict.pop('module.class_embedding', None)
+                new_state_dict.pop('module.embedding_table.weight', None)
+                new_state_dict.pop('module.proj_head.weight', None)
+                new_state_dict.pop('module.proj_head.bias', None)
+                #drop  "module.mask_token", "module.color_head.weight", "module.color_head.bias".   
+                new_state_dict.pop('module.mask_token', None)
+                new_state_dict.pop('module.color_head.weight', None)
+                new_state_dict.pop('module.color_head.bias', None)
 
-            self.deform.load_state_dict(new_state_dict)
-            print("Loaded pretrained weights for deform model")
+                self.deform.load_state_dict(new_state_dict)
+                print("Loaded pretrained weights for deform model")
         self.optimizer = None
         self.spatial_lr_scale = 5
         if USE_PTV3:
@@ -135,6 +169,8 @@ class SetDeformModel:
             self.reconstruct_head = nn.Linear(96, 10).cuda()
         if USE_PONDER:
             self.reconstruct_head = nn.Linear(96, 10).cuda()
+        print("model parameters:")
+        
     def step(self, xyz, time_emb):
         # xyz: [N, 3] - gaussian positions
         # time_emb: [N, 1] - time embeddings for each gaussian

@@ -33,7 +33,7 @@ except ImportError:
 PRE_TRAINED_GAUSSIANS = False
 PRE_TRAINED_DEFORM = False
 PRE_TRAINED_LOCATION = "/media/staging2/dhwang/Lightweight-Deformable-GS/output/set_pretrain_spunet_stand"
-
+USE_COLOR= True
 def training(dataset, opt, pipe, testing_iterations, saving_iterations):
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
