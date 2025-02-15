@@ -20,6 +20,7 @@ from utils.general_utils import safe_state, get_linear_noise_func
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
+from utils.sh_utils import SH2RGB
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
@@ -106,7 +107,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
             time_input = fid.unsqueeze(0).expand(N, -1)
 
             ast_noise = 0 if dataset.is_blender else torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term(iteration)
-            d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + ast_noise)
+            if USE_COLOR:
+                # here we use the first coefficient of the SH as the color
+                gaussian_shs = gaussians.get_features
+                sh0 = gaussian_shs[:,0, :]
+                rgb = SH2RGB(sh0)
+                d_xyz, d_rotation, d_scaling, = deform.step(gaussians.get_xyz.detach(), time_input + ast_noise, rgb.detach())
+            else:
+                d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + ast_noise)
 
         # Render
         render_pkg_re = render(viewpoint_cam, gaussians, pipe, background, d_xyz, d_rotation, d_scaling, dataset.is_6dof)
@@ -230,7 +238,11 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     fid = viewpoint.fid
                     xyz = scene.gaussians.get_xyz
                     time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
-                    d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+                    if USE_COLOR:
+                        rgb = SH2RGB(scene.gaussians.get_features[:,0, :])
+                        d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input, rgb.detach())
+                    else:
+                        d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
                     image = torch.clamp(
                         renderFunc(viewpoint, scene.gaussians, *renderArgs, d_xyz, d_rotation, d_scaling, is_6dof)["render"],
                         0.0, 1.0)

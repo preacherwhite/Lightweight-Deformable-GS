@@ -81,7 +81,7 @@ class OptimizationParams(ParamGroup):
         self.iterations = 40_000
         self.warm_up = 3000
         self.position_lr_init = 0.00016
-        self.position_lr_final = 0.00016
+        self.position_lr_final = 0.000016
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000
         self.deform_lr_max_steps = 40_000

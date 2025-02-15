@@ -54,10 +54,16 @@ USE_PTV3= False
 USE_PONDER = False
 FREEZE_ENCODER = True
 PRETRAIN = True
+USE_COLOR = True
+
+if USE_COLOR:
+    in_channels = 7
+else:
+    in_channels = 4
 class SetDeformModel:
     def __init__(self):
         if USE_PONDER:
-            self.deform = SpUNetBaseV3Wrap(in_channels=4,
+            self.deform = SpUNetBaseV3Wrap(in_channels=in_channels,
                                             num_classes=0,
                                             base_channels=32,
                                             context_channels=256,
@@ -87,10 +93,16 @@ class SetDeformModel:
                     if k.startswith('module.ponder_decoder.'):
                         new_state_dict.pop(k)
                 stem_weight = new_state_dict['conv_input.conv.weight']
-                # Take first 3 channels and expand to 4 with random values
-                stem_weight_3ch = stem_weight[...,:3]
-                random_ch = torch.randn_like(stem_weight_3ch[...,:1])
-                new_state_dict['conv_input.conv.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
+                if USE_COLOR:
+                    # take all 6 channels and expand to 7 with random values
+                    stem_weight_6ch = stem_weight
+                    random_ch = torch.randn_like(stem_weight_6ch[...,:1])
+                    new_state_dict['conv_input.conv.weight'] = torch.cat([stem_weight_6ch, random_ch], dim=-1)
+                else:
+                    # Take first 3 channels and expand to 4 with random values
+                    stem_weight_3ch = stem_weight[...,:3]
+                    random_ch = torch.randn_like(stem_weight_3ch[...,:1])
+                    new_state_dict['conv_input.conv.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
                 self.deform.load_state_dict(new_state_dict)
                 print("Loaded pretrained weights for deform model")
             if FREEZE_ENCODER:
@@ -101,7 +113,7 @@ class SetDeformModel:
                         print(param.name)
                         param.requires_grad = False
         if USE_SPUNET:
-            self.deform = SpUNetBaseWrap(in_channels=4,num_classes=0 ).cuda()
+            self.deform = SpUNetBaseWrap(in_channels=in_channels,num_classes=0 ).cuda()
             if PRETRAIN:
                 backbone_ckpt = torch.load('/media/staging2/dhwang/Lightweight-Deformable-GS/pretrained_weights/spunet/model/model_last.pth', weights_only=False)
                 new_state_dict = {k.replace('module.backbone.', ''): v for k, v in backbone_ckpt['state_dict'].items()}
@@ -119,10 +131,16 @@ class SetDeformModel:
                 new_state_dict.pop('final.weight', None)
                 new_state_dict.pop('final.bias', None)
                 stem_weight = new_state_dict['conv_input.0.weight']
-                # Take first 3 channels and expand to 4 with random values
-                stem_weight_3ch = stem_weight[...,:3]
-                random_ch = torch.randn_like(stem_weight_3ch[...,:1])
-                new_state_dict['conv_input.0.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
+                if USE_COLOR:
+                    # take all 6 channels and expand to 7 with random values
+                    stem_weight_6ch = stem_weight
+                    random_ch = torch.randn_like(stem_weight_6ch[...,:1])
+                    new_state_dict['conv_input.0.weight'] = torch.cat([stem_weight_6ch, random_ch], dim=-1)
+                else:
+                    # Take first 3 channels and expand to 4 with random values
+                    stem_weight_3ch = stem_weight[...,:3]
+                    random_ch = torch.randn_like(stem_weight_3ch[...,:1])
+                    new_state_dict['conv_input.0.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
                 self.deform.load_state_dict(new_state_dict)
                 print("Loaded pretrained weights for deform model")
             if FREEZE_ENCODER:
@@ -131,7 +149,7 @@ class SetDeformModel:
                     if 'enc' in name:
                         param.requires_grad = False
         if USE_PTV3:
-            self.deform = PointTransformerV3().cuda()
+            self.deform = PointTransformerV3(in_channels=in_channels).cuda()
             # Load pretrained weights for backbone
             # Commented out version is using scannet semantic segmentation pretrained model
             #backbone_ckpt = torch.load('/media/staging2/dhwang/Lightweight-Deformable-GS/pretrained_weights/spunet/model/model_last.pth', weights_only=False)
@@ -141,10 +159,16 @@ class SetDeformModel:
                 new_state_dict = {k.replace('module.backbone.', ''): v for k, v in backbone_ckpt['state_dict'].items()}
                 # Verify shape of embedding stem conv weight
                 stem_weight = new_state_dict['embedding.stem.conv.weight']
-                # Take first 3 channels and expand to 4 with random values
-                stem_weight_3ch = stem_weight[...,:3]
-                random_ch = torch.randn_like(stem_weight_3ch[...,:1])
-                new_state_dict['embedding.stem.conv.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
+                if USE_COLOR:
+                    # take all 6 channels and expand to 7 with random values
+                    stem_weight_6ch = stem_weight
+                    random_ch = torch.randn_like(stem_weight_6ch[...,:1])
+                    new_state_dict['embedding.stem.conv.weight'] = torch.cat([stem_weight_6ch, random_ch], dim=-1)
+                else:
+                    # Take first 3 channels and expand to 4 with random values
+                    stem_weight_3ch = stem_weight[...,:3]
+                    random_ch = torch.randn_like(stem_weight_3ch[...,:1])
+                    new_state_dict['embedding.stem.conv.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
 
                 # Remove segmentation head parameters since we don't need them
                 new_state_dict.pop('module.seg_head.weight', None)
@@ -171,7 +195,7 @@ class SetDeformModel:
             self.reconstruct_head = nn.Linear(96, 10).cuda()
         print("model parameters:")
         
-    def step(self, xyz, time_emb):
+    def step(self, xyz, time_emb, additional_features=None):
         # xyz: [N, 3] - gaussian positions
         # time_emb: [N, 1] - time embeddings for each gaussian
         
@@ -181,7 +205,10 @@ class SetDeformModel:
         xyz_normalized = (xyz - xyz_min) / (xyz_max - xyz_min + 1e-8)  # Scale to [0,1]
         
         # Concatenate position and time features
-        point_features = torch.cat([xyz, time_emb], dim=-1)  # [N, 4]
+        if additional_features is not None:
+            point_features = torch.cat([xyz, additional_features, time_emb], dim=-1)  # [N, 3+F]
+        else:
+            point_features = torch.cat([xyz, time_emb], dim=-1)  # [N, 4]
         
         # Create the data dictionary required by PointTransformerV3
         data_dict = {
