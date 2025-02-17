@@ -35,6 +35,7 @@ PRE_TRAINED_GAUSSIANS = False
 PRE_TRAINED_DEFORM = False
 PRE_TRAINED_LOCATION = "/media/staging2/dhwang/Lightweight-Deformable-GS/output/set_pretrain_spunet_stand"
 USE_COLOR= True
+DETACH_DEFORM = False
 def training(dataset, opt, pipe, testing_iterations, saving_iterations):
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -65,6 +66,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
     best_iteration = 0
     progress_bar = tqdm(range(opt.iterations), desc="Training progress")
     smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
+    # Print frozen parameters in deform model
+    print("Frozen parameters in deform model:")
+    for name, param in deform.deform.named_parameters():
+        if not param.requires_grad:
+            print(f"  {name}")
     for iteration in range(1, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -112,9 +118,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
                 gaussian_shs = gaussians.get_features
                 sh0 = gaussian_shs[:,0, :]
                 rgb = SH2RGB(sh0)
-                d_xyz, d_rotation, d_scaling, = deform.step(gaussians.get_xyz.detach(), time_input + ast_noise, rgb.detach())
+                if DETACH_DEFORM:
+                    d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + ast_noise, rgb.detach())
+                else:
+                    d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz, time_input + ast_noise, rgb)
             else:
-                d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + ast_noise)
+                if DETACH_DEFORM:
+                    d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + ast_noise)
+                else:
+                    d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz, time_input + ast_noise)
 
         # Render
         render_pkg_re = render(viewpoint_cam, gaussians, pipe, background, d_xyz, d_rotation, d_scaling, dataset.is_6dof)
@@ -286,7 +298,7 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int,
-                        default=[5000, 6000, 7_000] + list(range(10000, 40001, 1000)))
+                        default= list(range(1000, 40001, 1000)))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 10_000, 20_000, 30_000, 40000])
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(sys.argv[1:])

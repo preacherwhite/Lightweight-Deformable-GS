@@ -79,7 +79,7 @@ class PipelineParams(ParamGroup):
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 40_000
-        self.warm_up = 3000
+        self.warm_up = 0
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.000016
         self.position_lr_delay_mult = 0.01

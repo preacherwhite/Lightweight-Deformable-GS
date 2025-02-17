@@ -7,7 +7,7 @@ import os
 from utils.system_utils import searchForMaxIteration
 from utils.general_utils import get_expon_lr_func
 
-from pointcept.models.sparse_unet import SpUNetBaseWrap, SpUNetBaseV3Wrap
+from pointcept.models.sparse_unet import SpUNetBaseWrap, SpUNetBaseV3Wrap, SpUNetBaseWrapLatent, SpUNetBaseWrapODE
 class DeformModel:
     def __init__(self, is_blender=False, is_6dof=False):
         self.deform = DeformNetwork(is_blender=is_blender, is_6dof=is_6dof).cuda()
@@ -52,10 +52,14 @@ class DeformModel:
 USE_SPUNET = True
 USE_PTV3= False
 USE_PONDER = False
-FREEZE_ENCODER = True
+FREEZE_ENCODER = False   
+FREEZE_DECODER = False
+RE_INIT_DECODER = True
 PRETRAIN = True
 USE_COLOR = True
-
+D_XYZ_ONLY = False
+USE_SPUNET_LATENT = False
+USE_SPUNET_ODE = False
 if USE_COLOR:
     in_channels = 7
 else:
@@ -105,15 +109,25 @@ class SetDeformModel:
                     new_state_dict['conv_input.conv.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
                 self.deform.load_state_dict(new_state_dict)
                 print("Loaded pretrained weights for deform model")
+                
+
             if FREEZE_ENCODER:
-                print("Freezing encoder")
                 # Look for all parameters that include enc.
-                for param in self.deform.parameters():
-                    if 'enc' in param.name:
-                        print(param.name)
+                for name, param in self.deform.named_parameters(): 
+                    if 'enc' in name:
                         param.requires_grad = False
+            if FREEZE_DECODER:
+                    print("Freezing decoder")
+                    for name, param in self.deform.named_parameters():
+                        if 'dec' in name:
+                            param.requires_grad = False
         if USE_SPUNET:
-            self.deform = SpUNetBaseWrap(in_channels=in_channels,num_classes=0 ).cuda()
+            if USE_SPUNET_LATENT:
+                self.deform = SpUNetBaseWrapLatent(in_channels=in_channels,num_classes=0 ).cuda()
+            elif USE_SPUNET_ODE:
+                self.deform = SpUNetBaseWrapODE(in_channels=in_channels,num_classes=0 ).cuda()
+            else:
+                self.deform = SpUNetBaseWrap(in_channels=in_channels,num_classes=0 ).cuda()
             if PRETRAIN:
                 backbone_ckpt = torch.load('/media/staging2/dhwang/Lightweight-Deformable-GS/pretrained_weights/spunet/model/model_last.pth', weights_only=False)
                 new_state_dict = {k.replace('module.backbone.', ''): v for k, v in backbone_ckpt['state_dict'].items()}
@@ -131,6 +145,11 @@ class SetDeformModel:
                 new_state_dict.pop('final.weight', None)
                 new_state_dict.pop('final.bias', None)
                 stem_weight = new_state_dict['conv_input.0.weight']
+                if RE_INIT_DECODER:
+                    # Pop out all decoder weights
+                    keys_to_pop = [k for k in new_state_dict.keys() if 'dec' in k]
+                    for k in keys_to_pop:
+                        new_state_dict.pop(k)
                 if USE_COLOR:
                     # take all 6 channels and expand to 7 with random values
                     stem_weight_6ch = stem_weight
@@ -141,13 +160,18 @@ class SetDeformModel:
                     stem_weight_3ch = stem_weight[...,:3]
                     random_ch = torch.randn_like(stem_weight_3ch[...,:1])
                     new_state_dict['conv_input.0.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
-                self.deform.load_state_dict(new_state_dict)
+                self.deform.load_state_dict(new_state_dict, strict=False)
                 print("Loaded pretrained weights for deform model")
             if FREEZE_ENCODER:
                 # Look for all parameters that include enc.
-                for name, param in self.deform.named_parameters():
+                for name, param in self.deform.named_parameters(): 
                     if 'enc' in name:
                         param.requires_grad = False
+            if FREEZE_DECODER:
+                    print("Freezing decoder")
+                    for name, param in self.deform.named_parameters():
+                        if 'dec' in name:
+                            param.requires_grad = False
         if USE_PTV3:
             self.deform = PointTransformerV3(in_channels=in_channels).cuda()
             # Load pretrained weights for backbone
@@ -185,15 +209,34 @@ class SetDeformModel:
 
                 self.deform.load_state_dict(new_state_dict)
                 print("Loaded pretrained weights for deform model")
+                if FREEZE_ENCODER:
+                    # Look for all parameters that include enc.
+                    for name, param in self.deform.named_parameters(): 
+                        if 'enc' in name:
+                            param.requires_grad = False
+                if FREEZE_DECODER:
+                    print("Freezing decoder")
+                    for name, param in self.deform.named_parameters():
+                        if 'dec' in name:
+                            param.requires_grad = False
         self.optimizer = None
         self.spatial_lr_scale = 5
         if USE_PTV3:
-            self.reconstruct_head = nn.Linear(64, 10).cuda()
+            if D_XYZ_ONLY:
+                self.reconstruct_head = nn.Linear(64, 3).cuda()
+            else:
+                self.reconstruct_head = nn.Linear(64, 10).cuda()
         if USE_SPUNET:
-            self.reconstruct_head = nn.Linear(96, 10).cuda()
+            
+            if D_XYZ_ONLY:
+                self.reconstruct_head = nn.Linear(96, 3).cuda()
+            else:
+                self.reconstruct_head = nn.Linear(96, 10).cuda()
         if USE_PONDER:
-            self.reconstruct_head = nn.Linear(96, 10).cuda()
-        print("model parameters:")
+            if D_XYZ_ONLY:
+                self.reconstruct_head = nn.Linear(96, 3).cuda()
+            else:
+                self.reconstruct_head = nn.Linear(96, 10).cuda()
         
     def step(self, xyz, time_emb, additional_features=None):
         # xyz: [N, 3] - gaussian positions
@@ -227,9 +270,15 @@ class SetDeformModel:
             output = self.reconstruct_head(output)
         # Take first 3 channels as XYZ offsets
         deform_xyz = output[:, :3]
-        deform_quat = output[:, 3:7]
-        deform_scale = output[:, 7:]
-        return deform_xyz, deform_quat, deform_scale
+        if D_XYZ_ONLY:
+            #create a zero tensor for quat and scale
+            deform_quat = torch.zeros(output.shape[0], 4).cuda()
+            deform_scale = torch.zeros(output.shape[0], 3).cuda()
+            return deform_xyz, deform_quat, deform_scale
+        else:
+            deform_quat = output[:, 3:7]
+            deform_scale = output[:, 7:]
+            return deform_xyz, deform_quat, deform_scale
 
     def train_setting(self, training_args):
         l = [

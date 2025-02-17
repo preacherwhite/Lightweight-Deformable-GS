@@ -7,17 +7,20 @@ import numpy as np
 import os
 from os import makedirs
 from tqdm import tqdm
-from scene import Scene, GaussianModel, DeformModel, SetDeformModel, SetDeformModelSPUNet
+from scene import Scene, GaussianModel, DeformModel, SetDeformModel
 from arguments import ModelParams, PipelineParams, get_combined_args
 from argparse import ArgumentParser
 import sys
 from utils.system_utils import searchForMaxIteration
+from utils.sh_utils import SH2RGB
+USE_COLOR = True
+USE_OPACITY_FILTER = True
 def render_trajectory(dataset):
-    k = 50
+    k = 500
     n_frames = 150
 
     gaussians = GaussianModel(3)
-    model_path = "/media/staging2/dhwang/Lightweight-Deformable-GS/output/set_pretrain_scan_ppt"
+    model_path = "/media/staging2/dhwang/Lightweight-Deformable-GS/output/set_pretrain_spunet_10x_color_dxyz_balls"
     loaded_iter = searchForMaxIteration(os.path.join(model_path, "point_cloud"))
     gaussians.load_ply(os.path.join(model_path,
                                     "point_cloud",
@@ -26,18 +29,26 @@ def render_trajectory(dataset):
     print("Loading trained model at iteration {}".format(loaded_iter))
 
     deform = SetDeformModel()
-    deform.load_weights("/media/staging2/dhwang/Lightweight-Deformable-GS/output/set_pretrain_scan_ppt")
+    deform.load_weights(model_path)
 
 
     n_gaussians = gaussians.get_xyz.shape[0]
     # Filter out gaussians with low opacity
-    opacity = gaussians._opacity.sigmoid().detach()
-    high_opacity_mask = opacity.squeeze() > 0.95
-    print(f"Number of gaussians with high opacity: {high_opacity_mask.sum().item()}")
-    n_gaussians = high_opacity_mask.sum().item()
-    
+    if USE_OPACITY_FILTER:
+        opacity = gaussians._opacity.sigmoid().detach()
+        high_opacity_mask = opacity.squeeze() > 0.98
+        print(f"Number of gaussians with high opacity: {high_opacity_mask.sum().item()}")
+        n_gaussians = high_opacity_mask.sum().item()
+        gaussians._xyz = gaussians._xyz[high_opacity_mask]
     # Update xyz tensor to only include high opacity gaussians
-    gaussians._xyz = gaussians._xyz[high_opacity_mask]
+        
+    if USE_COLOR:
+        if USE_OPACITY_FILTER:
+            gaussian_shs = gaussians.get_features[high_opacity_mask]
+        else:
+            gaussian_shs = gaussians.get_features
+        sh0 = gaussian_shs[:,0, :]
+        gaussians_rgb = SH2RGB(sh0)
 
     sampled_indices = np.random.choice(gaussians.get_xyz.shape[0], k, replace=False)
     # Initialize arrays to store trajectories
@@ -47,7 +58,11 @@ def render_trajectory(dataset):
     for frame, time in enumerate(tqdm(times, desc="Collecting trajectory data")):
         fid = torch.Tensor([time]).unsqueeze(0).cuda().repeat(n_gaussians, 1)
         xyz = gaussians.get_xyz.detach()
-        d_xyz, _, _ = deform.step(xyz, fid)
+        if USE_COLOR:
+            rgb = gaussians_rgb
+        else:
+            rgb = None
+        d_xyz, _, _ = deform.step(xyz, fid, rgb)
 
         trajectories[:, frame, :] = (xyz[sampled_indices] + d_xyz[sampled_indices]).cpu().detach().numpy()
         
@@ -55,13 +70,12 @@ def render_trajectory(dataset):
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection='3d')
 
-    # Define colors
-    special_color = 'red'  # Color for the specified Gaussian
-    other_color = 'blue'   # Color for other Gaussians
+    # Define a color cycle
+    colors = plt.cm.rainbow(np.linspace(0, 1, len(sampled_indices)))
 
     for i in range(len(sampled_indices)):
         ax.plot(trajectories[i, :, 0], trajectories[i, :, 1], trajectories[i, :, 2], 
-                color=other_color, alpha=0.5)
+                color=colors[i], alpha=0.5)
 
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
@@ -70,7 +84,7 @@ def render_trajectory(dataset):
     plt.title(f'3D Trajectories of {len(sampled_indices)} Sampled Gaussians')
 
     # Save the plot
-    trajectory_path = os.path.join('output/set_pretrain_scan_ppt', f"trajectories", f"trajectories_{k}")
+    trajectory_path = os.path.join(model_path, f"trajectories", f"trajectories_{k}")
     makedirs(trajectory_path, exist_ok=True)
     plt.savefig(os.path.join(trajectory_path, 'gaussian_trajectories_filtered.png'))
     plt.close()
