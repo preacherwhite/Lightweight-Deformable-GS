@@ -52,14 +52,14 @@ class DeformModel:
 USE_SPUNET = True
 USE_PTV3= False
 USE_PONDER = False
-FREEZE_ENCODER = False   
-FREEZE_DECODER = False
-RE_INIT_DECODER = True
+FREEZE_ENCODER = True   
+FREEZE_DECODER = True
+RE_INIT_DECODER = False
 PRETRAIN = True
 USE_COLOR = True
 D_XYZ_ONLY = False
 USE_SPUNET_LATENT = False
-USE_SPUNET_ODE = False
+USE_SPUNET_ODE = True
 if USE_COLOR:
     in_channels = 7
 else:
@@ -238,10 +238,11 @@ class SetDeformModel:
             else:
                 self.reconstruct_head = nn.Linear(96, 10).cuda()
         
-    def step(self, xyz, time_emb, additional_features=None):
+    def step(self, xyz, time_emb, additional_features=None, time_seq = None):
         # xyz: [N, 3] - gaussian positions
         # time_emb: [N, 1] - time embeddings for each gaussian
-        
+        if time_seq is None:
+            assert USE_SPUNET_ODE == False, "time_seq must be provided if using ODE"
         # Normalize coordinates to a reasonable range
         xyz_min = xyz.min(dim=0)[0]
         xyz_max = xyz.max(dim=0)[0]
@@ -262,31 +263,57 @@ class SetDeformModel:
             "condition": "ScanNet"
         }
         
-        # Forward pass through backbone
-        output = self.deform(data_dict)
-        if USE_PTV3:
-            output = self.reconstruct_head(output.feat)
-        else:
-            output = self.reconstruct_head(output)
-        # Take first 3 channels as XYZ offsets
-        deform_xyz = output[:, :3]
-        if D_XYZ_ONLY:
-            #create a zero tensor for quat and scale
-            deform_quat = torch.zeros(output.shape[0], 4).cuda()
-            deform_scale = torch.zeros(output.shape[0], 3).cuda()
-            return deform_xyz, deform_quat, deform_scale
-        else:
-            deform_quat = output[:, 3:7]
-            deform_scale = output[:, 7:]
+        if USE_SPUNET_ODE:
+            # time_embed is used to inform encoder of current time step (included as additional feature), time sequence is used to integrate the decoder
+            output = self.deform(data_dict, time_seq)
+            # output is a sequence of features, we run reconstruct head for each time step
+            # also construct the list of deformations for each time step
+            deform_xyz = []
+            deform_quat = []
+            deform_scale = []
+            for i in range(len(output)):
+                deformations = self.reconstruct_head(output[i])
+                deform_xyz.append(deformations[:, :3])
+                if D_XYZ_ONLY:
+                    deform_quat.append(torch.zeros_like(deformations[:, 3:7]))
+                    deform_scale.append(torch.zeros_like(deformations[:, 7:]))
+                else:
+                    deform_quat.append(deformations[:, 3:7])
+                    deform_scale.append(deformations[:, 7:])
             return deform_xyz, deform_quat, deform_scale
 
+        else:
+            # Forward pass through backbone
+            output = self.deform(data_dict)
+
+            if USE_PTV3:
+                output = self.reconstruct_head(output.feat)
+            else:
+                output = self.reconstruct_head(output)
+            # Take first 3 channels as XYZ offsets
+            deform_xyz = output[:, :3]
+            if D_XYZ_ONLY:
+                #create a zero tensor for quat and scale
+                deform_quat = torch.zeros(output.shape[0], 4).cuda()
+                deform_scale = torch.zeros(output.shape[0], 3).cuda()
+                return deform_xyz, deform_quat, deform_scale
+            else:
+                deform_quat = output[:, 3:7]
+                deform_scale = output[:, 7:]
+                return deform_xyz, deform_quat, deform_scale
+
     def train_setting(self, training_args):
-        l = [
-            {'params': list(self.deform.parameters()),
-             'lr': training_args.position_lr_init * self.spatial_lr_scale,
-             "name": "deform"}
-        ]
-        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        # if freezing encoderr or decoder, we need to remove the parameters from the optimizer
+        params = []
+        for name, param in self.deform.named_parameters():
+            if not (FREEZE_ENCODER and 'enc' in name) and not (FREEZE_DECODER and 'dec' in name):
+                params.append({'params': param, 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "deform"})
+        # l = [
+        #     {'params': list(self.deform.parameters()),
+        #      'lr': training_args.position_lr_init * self.spatial_lr_scale,
+        #      "name": "deform"}
+        # ]
+        self.optimizer = torch.optim.Adam(params, lr=0.0, eps=1e-15)
 
         self.deform_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init * self.spatial_lr_scale,
                                                        lr_final=training_args.position_lr_final,

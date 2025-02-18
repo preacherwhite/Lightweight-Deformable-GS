@@ -19,6 +19,7 @@ from timm.models.layers import trunc_normal_
 from pointcept.models.builder import MODELS
 from pointcept.models.utils import offset2batch
 from pointcept.models.utils.structure import Point
+from torchdiffeq import odeint_adjoint
 
 class BasicBlock(spconv.SparseModule):
     expansion = 1
@@ -679,6 +680,23 @@ class DynamicsMLP(nn.Module):
         out = self.fc2(out)
         return out
 
+class DynamicsMLP_ODE(nn.Module):
+    #TODO: past experiments show that ReLU might cause instability in the ODE solver, try tanh instead
+    def __init__(self, in_channels, hidden_channels=None, out_channels=None):
+        super().__init__()
+        hidden_channels = hidden_channels or in_channels
+        out_channels = out_channels or in_channels  
+        self.fc1 = nn.Linear(in_channels, hidden_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.fc2 = nn.Linear(hidden_channels, out_channels)
+
+    def forward(self, t, x):
+        # currenlty not using t, but keeping it for future use
+        out = self.fc1(x)
+        out = self.relu(out)
+        out = self.fc2(out)
+        return out
+    
 
 @MODELS.register_module("SpUNet-v1m1-latent")
 class SpUNetBaseWrapLatent(nn.Module):
@@ -781,7 +799,9 @@ class SpUNetBaseWrapLatent(nn.Module):
                                 (
                                     f"block{i}",
                                     block(
-                                        dec_channels + enc_channels if i == 0 else dec_channels,
+                                        (dec_channels + enc_channels)
+                                        if i == 0
+                                        else dec_channels,
                                         dec_channels,
                                         norm_fn=norm_fn,
                                         indice_key=f"subm{s}",
@@ -816,6 +836,29 @@ class SpUNetBaseWrapLatent(nn.Module):
             out_channels=channels[self.num_stages - 1],
         )
         # -----------------------------------
+
+        # ---- Skip Connection Dynamics MLPs ----
+        # For each encoder skip (excluding the input from conv_input), we add a dynamics MLP.
+        if not self.cls_mode:
+            self.skip_dynamics = nn.ModuleList()
+            # Note: skips are recorded in order: conv_input output, then each stage's output.
+            # We apply dynamic processing to each skip except the very first (conv_input) if desired.
+            self.skip_dynamics.append(
+                DynamicsMLP(
+                    in_channels=base_channels,
+                    hidden_channels=base_channels // 2,
+                    out_channels=base_channels,
+                )
+            )
+            for s in range(self.num_stages-1):
+                self.skip_dynamics.append(
+                    DynamicsMLP(
+                        in_channels=channels[s],
+                        hidden_channels=channels[s] // 2,
+                        out_channels=channels[s],
+                    )
+                )
+        # -----------------------------------------
 
         self.apply(self._init_weights)
 
@@ -857,7 +900,7 @@ class SpUNetBaseWrapLatent(nn.Module):
         )
         x = self.conv_input(x)
         skips = [x]
-        # Encoder loop
+        # Encoder loop.
         for s in range(self.num_stages):
             x = self.down[s](x)
             x = self.enc[s](x)
@@ -866,9 +909,7 @@ class SpUNetBaseWrapLatent(nn.Module):
         x = skips.pop(-1)
 
         # ---- Apply the Bottleneck Dynamics MLP ----
-        # Process the per-point features at the bottleneck to model dynamics.
         dyn = self.dynamics_mlp(x.features)
-        # For a residual connection, we add the dynamics offset to the original features.
         x = x.replace_feature(x.features + dyn)
         # ---------------------------------------------
 
@@ -877,6 +918,10 @@ class SpUNetBaseWrapLatent(nn.Module):
             for s in reversed(range(self.num_stages)):
                 x = self.up[s](x)
                 skip = skips.pop(-1)
+                # ---- Apply the Skip Dynamics MLP ----
+                skip_dyn = self.skip_dynamics[s](skip.features)
+                skip = skip.replace_feature(skip.features + skip_dyn)
+                # --------------------------------------
                 x = x.replace_feature(torch.cat((x.features, skip.features), dim=1))
                 x = self.dec[s](x)
 
@@ -933,7 +978,7 @@ class SpUNetBaseWrapODE(nn.Module):
         self.dec = nn.ModuleList() if not self.cls_mode else None
 
         for s in range(self.num_stages):
-            # encode num_stages
+            # Encoder: Downsample and residual blocks.
             self.down.append(
                 spconv.SparseSequential(
                     spconv.SparseConv3d(
@@ -952,8 +997,6 @@ class SpUNetBaseWrapODE(nn.Module):
                 spconv.SparseSequential(
                     OrderedDict(
                         [
-                            # (f"block{i}", block(enc_channels, channels[s], norm_fn=norm_fn, indice_key=f"subm{s + 1}"))
-                            # if i == 0 else
                             (
                                 f"block{i}",
                                 block(
@@ -969,7 +1012,7 @@ class SpUNetBaseWrapODE(nn.Module):
                 )
             )
             if not self.cls_mode:
-                # decode num_stages
+                # Decoder: Inverse conv and residual blocks.
                 self.up.append(
                     spconv.SparseSequential(
                         spconv.SparseInverseConv3d(
@@ -988,25 +1031,15 @@ class SpUNetBaseWrapODE(nn.Module):
                         OrderedDict(
                             [
                                 (
-                                    (
-                                        f"block{i}",
-                                        block(
-                                            dec_channels + enc_channels,
-                                            dec_channels,
-                                            norm_fn=norm_fn,
-                                            indice_key=f"subm{s}",
-                                        ),
-                                    )
-                                    if i == 0
-                                    else (
-                                        f"block{i}",
-                                        block(
-                                            dec_channels,
-                                            dec_channels,
-                                            norm_fn=norm_fn,
-                                            indice_key=f"subm{s}",
-                                        ),
-                                    )
+                                    f"block{i}",
+                                    block(
+                                        (dec_channels + enc_channels)
+                                        if i == 0
+                                        else dec_channels,
+                                        dec_channels,
+                                        norm_fn=norm_fn,
+                                        indice_key=f"subm{s}",
+                                    ),
                                 )
                                 for i in range(layers[len(channels) - s - 1])
                             ]
@@ -1027,6 +1060,17 @@ class SpUNetBaseWrapODE(nn.Module):
             if num_classes > 0
             else spconv.Identity()
         )
+
+        # ---- Bottleneck Dynamics MLP ----
+        # The bottleneck latent from the encoder has channel dimension channels[self.num_stages - 1].
+        # We insert a per-point MLP to model the dynamics at the bottleneck.
+        self.dynamics_mlp = DynamicsMLP_ODE(
+            in_channels=channels[self.num_stages - 1],
+            hidden_channels=channels[self.num_stages - 1] // 2,
+            out_channels=channels[self.num_stages - 1],
+        )
+        # -----------------------------------
+
         self.apply(self._init_weights)
 
     @staticmethod
@@ -1043,7 +1087,9 @@ class SpUNetBaseWrapODE(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def forward(self, input_dict):
+    def forward(self, input_dict, time_emb):
+        # time_emb: T * 1 :sequence of time steps
+        # input_dict : N*F : N gaussians with F features, usually 3 for xyz + 3 for rgb + 1 for current time step
         point = Point(input_dict)
         if "grid_coord" not in point.keys():
             assert {"grid_size", "coord"}.issubset(point.keys())
@@ -1055,6 +1101,7 @@ class SpUNetBaseWrapODE(nn.Module):
         offset = point["offset"]
 
         batch = offset2batch(offset)
+        # Set the spatial shape with some margin.
         sparse_shape = torch.add(torch.max(grid_coord, dim=0).values, 96).tolist()
         x = spconv.SparseConvTensor(
             features=feat,
@@ -1066,23 +1113,33 @@ class SpUNetBaseWrapODE(nn.Module):
         )
         x = self.conv_input(x)
         skips = [x]
-        # enc forward
+        # Encoder loop.
         for s in range(self.num_stages):
             x = self.down[s](x)
             x = self.enc[s](x)
             skips.append(x)
+        # Bottleneck latent representation.
         x = skips.pop(-1)
-        if not self.cls_mode:
-            # dec forward
+
+        # ---- Apply the Bottleneck Dynamics MLP ----
+        t_interval = torch.Tensor(time_emb).to(x.features.device)
+        ode_value = odeint_adjoint(self.dynamics_mlp, x.features, t_interval).squeeze()
+        # ode_value: T * Bottleneck_size * Bottleneck_feature_size
+        # This creates a sequence of new features for each gaussian, thus our decoder will also have a sequence of features
+        # create a sequence of new xs
+        x_seq = []
+        for i in range(len(ode_value)):
+            x_seq.append(x.replace_feature(ode_value[i]))
+        # ---------------------------------------------
+        x_seq_out = []
+        for x in x_seq:
+            # Decoder loop with skip connections.
             for s in reversed(range(self.num_stages)):
                 x = self.up[s](x)
-                skip = skips.pop(-1)
+                skip = skips[s]  # Use skip directly from index instead of popping
                 x = x.replace_feature(torch.cat((x.features, skip.features), dim=1))
                 x = self.dec[s](x)
 
-        x = self.final(x)
-        if self.cls_mode:
-            x = x.replace_feature(
-                scatter(x.features, x.indices[:, 0].long(), reduce="mean", dim=0)
-            )
-        return x.features
+            x = self.final(x)
+            x_seq_out.append(x.features)
+        return x_seq_out
