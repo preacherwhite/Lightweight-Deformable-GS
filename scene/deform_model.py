@@ -1,13 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils.time_utils import DeformNetwork
+from utils.time_utils import DeformNetwork, DeformHead
 from utils.ptv3_model import PointTransformerV3
 import os
 from utils.system_utils import searchForMaxIteration
 from utils.general_utils import get_expon_lr_func
 
-from pointcept.models.sparse_unet import SpUNetBaseWrap, SpUNetBaseV3Wrap, SpUNetBaseWrapLatent, SpUNetBaseWrapODE
+from pointcept.models.sparse_unet import SpUNetBaseWrap, SpUNetBaseV3Wrap, SpUNetBaseWrapLatent, SpUNetBaseWrapODE, SpUNetBaseWrapTorchODE
 class DeformModel:
     def __init__(self, is_blender=False, is_6dof=False):
         self.deform = DeformNetwork(is_blender=is_blender, is_6dof=is_6dof).cuda()
@@ -59,11 +59,19 @@ PRETRAIN = True
 USE_COLOR = True
 D_XYZ_ONLY = False
 USE_SPUNET_LATENT = False
-USE_SPUNET_ODE = True
+USE_SPUNET_ODE = False
+USE_SPUNET_TORCHODE = False
+LARGE_HEAD = True
 if USE_COLOR:
-    in_channels = 7
+    if LARGE_HEAD:
+        in_channels = 6
+    else:
+        in_channels = 7
 else:
-    in_channels = 4
+    if LARGE_HEAD:
+        in_channels = 3
+    else:
+        in_channels = 4
 class SetDeformModel:
     def __init__(self):
         if USE_PONDER:
@@ -126,6 +134,8 @@ class SetDeformModel:
                 self.deform = SpUNetBaseWrapLatent(in_channels=in_channels,num_classes=0 ).cuda()
             elif USE_SPUNET_ODE:
                 self.deform = SpUNetBaseWrapODE(in_channels=in_channels,num_classes=0 ).cuda()
+            elif USE_SPUNET_TORCHODE:
+                self.deform = SpUNetBaseWrapTorchODE(in_channels=in_channels,num_classes=0 ).cuda()
             else:
                 self.deform = SpUNetBaseWrap(in_channels=in_channels,num_classes=0 ).cuda()
             if PRETRAIN:
@@ -150,16 +160,12 @@ class SetDeformModel:
                     keys_to_pop = [k for k in new_state_dict.keys() if 'dec' in k]
                     for k in keys_to_pop:
                         new_state_dict.pop(k)
-                if USE_COLOR:
-                    # take all 6 channels and expand to 7 with random values
-                    stem_weight_6ch = stem_weight
-                    random_ch = torch.randn_like(stem_weight_6ch[...,:1])
-                    new_state_dict['conv_input.0.weight'] = torch.cat([stem_weight_6ch, random_ch], dim=-1)
-                else:
-                    # Take first 3 channels and expand to 4 with random values
-                    stem_weight_3ch = stem_weight[...,:3]
-                    random_ch = torch.randn_like(stem_weight_3ch[...,:1])
-                    new_state_dict['conv_input.0.weight'] = torch.cat([stem_weight_3ch, random_ch], dim=-1)
+                if not USE_COLOR:
+                    stem_weight = stem_weight[...,:3]
+                # for color we take all 6 channels and expand to 7 with random values
+                if not LARGE_HEAD:
+                    random_ch = torch.randn_like(stem_weight[...,:1])
+                    new_state_dict['conv_input.0.weight'] = torch.cat([stem_weight, random_ch], dim=-1)
                 self.deform.load_state_dict(new_state_dict, strict=False)
                 print("Loaded pretrained weights for deform model")
             if FREEZE_ENCODER:
@@ -226,13 +232,16 @@ class SetDeformModel:
                 self.reconstruct_head = nn.Linear(64, 3).cuda()
             else:
                 self.reconstruct_head = nn.Linear(64, 10).cuda()
-        if USE_SPUNET:
-            
-            if D_XYZ_ONLY:
-                self.reconstruct_head = nn.Linear(96, 3).cuda()
-            else:
-                self.reconstruct_head = nn.Linear(96, 10).cuda()
-        if USE_PONDER:
+        elif USE_SPUNET:
+            if LARGE_HEAD:
+                assert D_XYZ_ONLY == False, "D_XYZ_ONLY must be False for large head"
+                self.reconstruct_head = DeformHead(is_blender=True, is_6dof=False, input_ch=96).cuda()
+            else:   
+                if D_XYZ_ONLY:
+                    self.reconstruct_head = nn.Linear(96, 3).cuda()
+                else:
+                    self.reconstruct_head = nn.Linear(96, 10).cuda()
+        elif USE_PONDER:
             if D_XYZ_ONLY:
                 self.reconstruct_head = nn.Linear(96, 3).cuda()
             else:
@@ -250,9 +259,15 @@ class SetDeformModel:
         
         # Concatenate position and time features
         if additional_features is not None:
-            point_features = torch.cat([xyz, additional_features, time_emb], dim=-1)  # [N, 3+F]
+            if LARGE_HEAD:
+                point_features = torch.cat([xyz, additional_features], dim=-1)  # [N, 3+F]
+            else:
+                point_features = torch.cat([xyz, additional_features, time_emb], dim=-1)  # [N, 3+F]
         else:
-            point_features = torch.cat([xyz, time_emb], dim=-1)  # [N, 4]
+            if LARGE_HEAD:
+                point_features = torch.cat([xyz], dim=-1)  # [N, 4]
+            else:
+                point_features = torch.cat([xyz, time_emb], dim=-1)  # [N, 4]
         
         # Create the data dictionary required by PointTransformerV3
         data_dict = {
@@ -263,7 +278,7 @@ class SetDeformModel:
             "condition": "ScanNet"
         }
         
-        if USE_SPUNET_ODE:
+        if USE_SPUNET_ODE or USE_SPUNET_TORCHODE:
             # time_embed is used to inform encoder of current time step (included as additional feature), time sequence is used to integrate the decoder
             output = self.deform(data_dict, time_seq)
             # output is a sequence of features, we run reconstruct head for each time step
@@ -281,6 +296,11 @@ class SetDeformModel:
                     deform_quat.append(deformations[:, 3:7])
                     deform_scale.append(deformations[:, 7:])
             return deform_xyz, deform_quat, deform_scale
+        
+        elif LARGE_HEAD:
+            output = self.deform(data_dict)
+            d_xyz, d_quat, d_scale = self.reconstruct_head(output, time_emb)
+            return d_xyz, d_quat, d_scale
 
         else:
             # Forward pass through backbone

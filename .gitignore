@@ -21,3 +21,11 @@ pretrained_weights
 *.pt.tar
 *.pth.tar.gz
 *.pt.tar.gz
+*.npy
+*.npz
+*.npz.gz
+*.npz.tar
+*.npz.tar.gz
+*.npz.tar.gz.tar
+*.npz.tar.gz.tar.gz
+*.npz.tar.gz.tar.gz.tar

@@ -22,7 +22,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser
 from pytorch_msssim import ms_ssim
-
+import traceback
 
 def readImages(renders_dir, gt_dir):
     renders = []
@@ -52,52 +52,57 @@ def evaluate(model_paths):
             full_dict_polytopeonly[scene_dir] = {}
             per_view_dict_polytopeonly[scene_dir] = {}
 
-            test_dir = Path(scene_dir) / "test"
+            # Find all test directories
+            scene_path = Path(scene_dir)
+            test_dirs = [d for d in scene_path.glob("test*") if d.is_dir()]
+            print(f"Test directories: {test_dirs}")
+            for test_dir in test_dirs:
+                print(f"Test directory: {test_dir}")
+                
+                for method in os.listdir(test_dir):
+                    if not method.startswith("ours"):
+                        continue
+                    print("Method:", method)
 
-            for method in os.listdir(test_dir):
-                if not method.startswith("ours"):
-                    continue
-                print("Method:", method)
+                    full_dict[scene_dir][method] = {}
+                    per_view_dict[scene_dir][method] = {}
+                    full_dict_polytopeonly[scene_dir][method] = {}
+                    per_view_dict_polytopeonly[scene_dir][method] = {}
 
-                full_dict[scene_dir][method] = {}
-                per_view_dict[scene_dir][method] = {}
-                full_dict_polytopeonly[scene_dir][method] = {}
-                per_view_dict_polytopeonly[scene_dir][method] = {}
+                    method_dir = test_dir / method
+                    gt_dir = method_dir / "gt"
+                    renders_dir = method_dir / "renders"
+                    renders, gts, image_names = readImages(renders_dir, gt_dir)
 
-                method_dir = test_dir / method
-                gt_dir = method_dir / "gt"
-                renders_dir = method_dir / "renders"
-                renders, gts, image_names = readImages(renders_dir, gt_dir)
+                    ssims = []
+                    ms_ssims = []
+                    psnrs = []
+                    lpips_vggs = []
+                    lpips_alexs = []
 
-                ssims = []
-                ms_ssims = []
-                psnrs = []
-                lpips_vggs = []
-                lpips_alexs = []
+                    for idx in tqdm(range(len(renders)), desc="Metric evaluation progress"):
+                        ssims.append(ssim(renders[idx], gts[idx]))
+                        psnrs.append(psnr(renders[idx], gts[idx]))
+                        ms_ssims.append(ms_ssim(renders[idx], gts[idx], data_range=1, size_average=True))
+                        lpips_vggs.append(lpips_vgg(renders[idx], gts[idx]).detach())
+                        lpips_alexs.append(lpips_alex(renders[idx], gts[idx]).detach())
 
-                for idx in tqdm(range(len(renders)), desc="Metric evaluation progress"):
-                    ssims.append(ssim(renders[idx], gts[idx]))
-                    psnrs.append(psnr(renders[idx], gts[idx]))
-                    ms_ssims.append(ms_ssim(renders[idx], gts[idx], data_range=1, size_average=True))
-                    lpips_vggs.append(lpips_vgg(renders[idx], gts[idx]).detach())
-                    lpips_alexs.append(lpips_alex(renders[idx], gts[idx]).detach())
+                    print("  SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".5"))
+                    print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs).mean(), ".5"))
+                    print("  MS-SSIM : {:>12.7f}".format(torch.tensor(ms_ssims).mean(), ".5"))
+                    print("  LPIPS-VGG: {:>12.7f}".format(torch.tensor(lpips_vggs).mean(), ".5"))
+                    print("  LPIPS-ALEX: {:>12.7f}".format(torch.tensor(lpips_alexs).mean(), ".5"))
+                    print("")
 
-                print("  SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".5"))
-                print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs).mean(), ".5"))
-                print("  MS-SSIM : {:>12.7f}".format(torch.tensor(ms_ssims).mean(), ".5"))
-                print("  LPIPS-VGG: {:>12.7f}".format(torch.tensor(lpips_vggs).mean(), ".5"))
-                print("  LPIPS-ALEX: {:>12.7f}".format(torch.tensor(lpips_alexs).mean(), ".5"))
-                print("")
-
-                full_dict[scene_dir][method].update({"SSIM": torch.tensor(ssims).mean().item(),
-                                                     "PSNR": torch.tensor(psnrs).mean().item(),
-                                                     "LPIPS-VGG": torch.tensor(lpips_vggs).mean().item(),
-                                                     "LPIPS-ALEX": torch.tensor(lpips_alexs).mean().item(),
-                                                     "MS-SSIM": torch.tensor(ms_ssims).mean().item()})
-                per_view_dict[scene_dir][method].update(
-                    {"SSIM": {name: ssim for ssim, name in zip(torch.tensor(ssims).tolist(), image_names)},
-                     "PSNR": {name: psnr for psnr, name in zip(torch.tensor(psnrs).tolist(), image_names)},
-                     "LPIPS": {name: lp for lp, name in zip(torch.tensor(lpips_vgg).tolist(), image_names)}})
+                    full_dict[scene_dir][method].update({"SSIM": torch.tensor(ssims).mean().item(),
+                                                         "PSNR": torch.tensor(psnrs).mean().item(),
+                                                         "LPIPS-VGG": torch.tensor(lpips_vggs).mean().item(),
+                                                         "LPIPS-ALEX": torch.tensor(lpips_alexs).mean().item(),
+                                                         "MS-SSIM": torch.tensor(ms_ssims).mean().item()})
+                    per_view_dict[scene_dir][method].update(
+                        {"SSIM": {name: ssim for ssim, name in zip(torch.tensor(ssims).tolist(), image_names)},
+                         "PSNR": {name: psnr for psnr, name in zip(torch.tensor(psnrs).tolist(), image_names)},
+                         "LPIPS": {name: lp for lp, name in zip(torch.tensor(lpips_vggs).tolist(), image_names)}})
 
             with open(scene_dir + "/results.json", 'w') as fp:
                 json.dump(full_dict[scene_dir], fp, indent=True)
@@ -105,6 +110,8 @@ def evaluate(model_paths):
                 json.dump(per_view_dict[scene_dir], fp, indent=True)
         except:
             print("Unable to compute metrics for model", scene_dir)
+            # print the error
+            print(traceback.format_exc())
 
 
 if __name__ == "__main__":

@@ -379,8 +379,8 @@ class GaussianModel:
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        print(viewspace_point_tensor.grad.shape)
-        print(self.xyz_gradient_accum.shape)
+        # print(viewspace_point_tensor.grad.shape)
+        # print(self.xyz_gradient_accum.shape)
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, :2], dim=-1,
                                                              keepdim=True)
         self.denom[update_filter] += 1

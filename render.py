@@ -74,7 +74,7 @@ def render_set(model_path, load2gpu_on_the_fly, is_6dof, name, iteration, views,
 
     t = np.array(t_list[5:])
     fps = 1.0 / t.mean()
-    print(f'Test FPS: \033[1;35m{fps:.5f}\033[0m, Num. of GS: {xyz.shape[0]}')
+    print(f'Test FPS: \033[1;35m{fps:.5f}\033[0m, Num. of GS: {gaussians.get_xyz.shape[0]}')
 
     #renderings = np.stack(renderings, 0).transpose(0, 2, 3, 1)
     #imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=30, quality=8)

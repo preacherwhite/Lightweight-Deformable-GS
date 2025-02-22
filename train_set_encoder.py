@@ -35,7 +35,11 @@ PRE_TRAINED_GAUSSIANS = False
 PRE_TRAINED_DEFORM = False
 PRE_TRAINED_LOCATION = "/media/staging2/dhwang/Lightweight-Deformable-GS/output/set_pretrain_spunet_stand"
 USE_COLOR= True
-DETACH_DEFORM = False
+DETACH_DEFORM = True
+
+# Add at the top with other global variables
+DEBUG = False
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations):
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -71,6 +75,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
     for name, param in deform.deform.named_parameters():
         if not param.requires_grad:
             print(f"  {name}")
+
+    # Add timing dictionary
+    if DEBUG:
+        timing_stats = {
+            'deform_step': 0.0,
+            'rendering': 0.0,
+            'loss_compute': 0.0,
+            'loss_backward': 0.0,
+            'optimization': 0.0,
+            'densification': 0.0
+        }
+        timing_start = torch.cuda.Event(enable_timing=True)
+        timing_end = torch.cuda.Event(enable_timing=True)
+
     for iteration in range(1, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -106,6 +124,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
             viewpoint_cam.load2device()
         fid = viewpoint_cam.fid
 
+        # Time deform step
+        if DEBUG:
+            timing_start.record()
+            
         if iteration < opt.warm_up:
             d_xyz, d_rotation, d_scaling = 0.0, 0.0, 0.0
         else:
@@ -128,17 +150,47 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
                 else:
                     d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz, time_input + ast_noise)
 
-        # Render
+        if DEBUG:
+            timing_end.record()
+            torch.cuda.synchronize()
+            timing_stats['deform_step'] += timing_start.elapsed_time(timing_end)
+
+        # Time rendering
+        if DEBUG:
+            timing_start.record()
+            
         render_pkg_re = render(viewpoint_cam, gaussians, pipe, background, d_xyz, d_rotation, d_scaling, dataset.is_6dof)
+        
+        if DEBUG:
+            timing_end.record()
+            torch.cuda.synchronize()
+            timing_stats['rendering'] += timing_start.elapsed_time(timing_end)
+
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg_re["render"], render_pkg_re[
             "viewspace_points"], render_pkg_re["visibility_filter"], render_pkg_re["radii"]
         # depth = render_pkg_re["depth"]
 
-        # Loss
+        # Time loss computation
+        if DEBUG:
+            timing_start.record()
+            
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        
+        if DEBUG:
+            timing_end.record()
+            torch.cuda.synchronize()
+            timing_stats['loss_compute'] += timing_start.elapsed_time(timing_end)
+            
+            timing_start.record()
+            
         loss.backward()
+        
+        if DEBUG:
+            timing_end.record()
+            torch.cuda.synchronize()
+            timing_stats['loss_backward'] += timing_start.elapsed_time(timing_end)
 
         iter_end.record()
 
@@ -187,7 +239,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
                             dataset.white_background and iteration == opt.densify_from_iter):
                         gaussians.reset_opacity()
 
-            # Optimizer step
+            # Time optimization step
+            if DEBUG:
+                timing_start.record()
+                
             if iteration < opt.iterations:
                 if not PRE_TRAINED_GAUSSIANS:
                     gaussians.optimizer.step()
@@ -197,6 +252,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
                     deform.optimizer.step()
                     deform.optimizer.zero_grad()
                     deform.update_learning_rate(iteration)
+                
+            if DEBUG:
+                timing_end.record()
+                torch.cuda.synchronize()
+                timing_stats['optimization'] += timing_start.elapsed_time(timing_end)
+
+            # Print timing stats every 100 iterations
+            if DEBUG and iteration % 100 == 0:
+                print("\nTiming stats for last 100 iterations (ms):")
+                for key, value in timing_stats.items():
+                    print(f"{key}: {value/100:.2f}")
+                    timing_stats[key] = 0.0  # Reset counters
 
     print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration))
 
