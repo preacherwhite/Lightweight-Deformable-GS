@@ -16,14 +16,14 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.image_utils import psnr
 from random import sample
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_gaussians=False, window_length=40, obs_length=20, batch_size=1024, render_interval=4, val_batch_size=8192, trajectory_path=None, learning_rate=1e-3, xyz_only=False):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_gaussians=False, window_length=40, obs_length=20, batch_size=1024, render_interval=4, val_batch_size=8192, trajectory_path=None, learning_rate=1e-3, xyz_only=False, warmup_iterations=500):
     tb_writer = prepare_output_and_logger(dataset)
     
     # Load pre-trained models
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians, load_iteration=-1, shuffle=False)
     print("loaded {} gaussians".format(gaussians.get_xyz.shape[0]))
-    deform = DeformModel(dataset.is_blender, dataset.is_6dof)  # Pass xyz_only to DeformModel
+    deform = DeformModel(dataset.is_blender, dataset.is_6dof)
     deform.load_weights(dataset.model_path, iteration=-1)
     deform.deform.eval()
 
@@ -54,9 +54,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
                 time_input = fid.unsqueeze(0).expand(num_gaussians, -1)
                 with torch.no_grad():
                     if xyz_only:
-                        d_xyz, _, _ = deform.step(xyz.detach(), time_input) # Only d_xyz
+                        d_xyz, _, _ = deform.step(xyz.detach(), time_input)
                         t_xyz = d_xyz + xyz
-                        trajectories = t_xyz  # Only XYZ
+                        trajectories = t_xyz
                     else:
                         d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
                         t_xyz = d_xyz + xyz
@@ -67,15 +67,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
             all_trajectories = torch.stack(all_trajectories, dim=0)
             np.save(trajectory_file, all_trajectories.cpu().numpy())
 
-    # Adjust trajectories if xyz_only and precomputed
     if xyz_only and (trajectory_path is not None or os.path.exists(trajectory_file)):
-        all_trajectories = all_trajectories[..., :3]  # Take only first 3 dimensions (xyz)
+        all_trajectories = all_trajectories[..., :3]
 
     # Initialize Transformer ODE
-    obs_dim = 3 if xyz_only else 10  # 3 for xyz_only, 10 (d_xyz:3, d_rotation:4, d_scaling:3) otherwise
+    obs_dim = 3 if xyz_only else 10
     transformer_ode = TransformerLatentODEWrapper(
-        latent_dim=10, d_model=64, nhead=4, num_encoder_layers=3,
-        ode_nhidden=64, decoder_nhidden=64, obs_dim=obs_dim, noise_std=0.1, ode_layers=3
+        latent_dim=10, d_model=128, nhead=8, num_encoder_layers=5,
+        ode_nhidden=20, decoder_nhidden=128, obs_dim=obs_dim, noise_std=0.1, ode_layers=1
     ).cuda()
     
     # Set up optimizers
@@ -106,7 +105,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
     # Loss balancing parameters
     ode_weight = 1e-3
     render_weight = 1
-    # Fixed indices for validation image logging
+    warmup_weight = 1  # Weight for warmup reconstruction loss
     fixed_val_indices = [0, 5, 10, 15, 20][:len(val_cameras)]
     
     # Best model tracking
@@ -116,7 +115,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
     for iteration in range(1, opt.iterations + 1):
         iter_start.record()
 
-        # Training: Sliding window prediction
+        # Sample training data
         if len(train_cameras) <= window_length:
             start_idx = 0
         else:
@@ -131,52 +130,88 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
         target_traj = traj_gt[obs_length:].permute(1, 0, 2)
         full_time = fids.unsqueeze(0)
         
-        loss, pred_traj = transformer_ode(obs_traj, target_traj, full_time)
-        pred_traj = pred_traj.permute(1, 0, 2)
-        
-        # Rendering for training
-        render_indices = list(range(0, window_length, render_interval))
-        if window_length - 1 not in render_indices:
-            render_indices.append(window_length - 1)
-        
-        rendering_losses = []
-        render_pkgs = []
-        for render_frame_idx in render_indices:
+        # Warmup phase: Use transformer_only_reconstruction
+        if iteration <= warmup_iterations:
+            # Use only the first frame of obs_traj
+            loss, pred_traj_first = transformer_ode.transformer_only_reconstruction(obs_traj)  # pred_traj_first: (B, obs_dim)
+            warmup_loss = loss * warmup_weight
+            
+            # Rendering for the first frame only
+            render_frame_idx = 0  # First frame of the window
             viewpoint_idx = viewpoint_indices[render_frame_idx]
             viewpoint_cam_k = train_cameras[viewpoint_idx]
-            pred_at_k = pred_traj[render_frame_idx]
             if xyz_only:
                 new_xyz_render_k = trajectories[render_frame_idx].clone()
-                new_xyz_render_k[batch_indices] = pred_at_k
-                new_rotation_render_k = gaussians.get_rotation  # Use static rotation
-                new_scaling_render_k = gaussians.get_scaling   # Use static scaling
+                new_xyz_render_k[batch_indices] = pred_traj_first
+                new_rotation_render_k = gaussians.get_rotation
+                new_scaling_render_k = gaussians.get_scaling
             else:
                 new_xyz_render_k = trajectories[render_frame_idx, :, :3].clone()
                 new_rotation_render_k = trajectories[render_frame_idx, :, 3:7].clone()
                 new_scaling_render_k = trajectories[render_frame_idx, :, 7:].clone()
-                new_xyz_render_k[batch_indices] = pred_at_k[:, :3]
-                new_rotation_render_k[batch_indices] = pred_at_k[:, 3:7]
-                new_scaling_render_k[batch_indices] = pred_at_k[:, 7:]
+                new_xyz_render_k[batch_indices] = pred_traj_first[:, :3]
+                new_rotation_render_k[batch_indices] = pred_traj_first[:, 3:7]
+                new_scaling_render_k[batch_indices] = pred_traj_first[:, 7:]
             render_pkg_k = render_ode(
                 viewpoint_cam_k, gaussians, pipe, background,
                 new_xyz_render_k, new_rotation_render_k, new_scaling_render_k,
                 dataset.is_6dof
             )
-            render_pkgs.append(render_pkg_k)
             image_k = render_pkg_k["render"]
             gt_image_k = viewpoint_cam_k.original_image.cuda()
             Ll1_k = l1_loss(image_k, gt_image_k)
             rendering_loss_k = (1.0 - opt.lambda_dssim) * Ll1_k + opt.lambda_dssim * (1.0 - ssim(image_k, gt_image_k))
-            rendering_losses.append(rendering_loss_k)
+            scaled_render_loss = rendering_loss_k * render_weight
+            
+            total_loss = warmup_loss + scaled_render_loss
+            render_pkgs = [render_pkg_k]  # For densification if train_gaussians is True
         
-        avg_rendering_loss = torch.mean(torch.stack(rendering_losses))
+        # Normal ODE-based training
+        else:
+            loss, pred_traj = transformer_ode(obs_traj, target_traj, full_time)
+            pred_traj = pred_traj.permute(1, 0, 2)
+            
+            # Rendering for training
+            render_indices = list(range(0, window_length, render_interval))
+            if window_length - 1 not in render_indices:
+                render_indices.append(window_length - 1)
+            
+            rendering_losses = []
+            render_pkgs = []
+            for render_frame_idx in render_indices:
+                viewpoint_idx = viewpoint_indices[render_frame_idx]
+                viewpoint_cam_k = train_cameras[viewpoint_idx]
+                pred_at_k = pred_traj[render_frame_idx]
+                if xyz_only:
+                    new_xyz_render_k = trajectories[render_frame_idx].clone()
+                    new_xyz_render_k[batch_indices] = pred_at_k
+                    new_rotation_render_k = gaussians.get_rotation
+                    new_scaling_render_k = gaussians.get_scaling
+                else:
+                    new_xyz_render_k = trajectories[render_frame_idx, :, :3].clone()
+                    new_rotation_render_k = trajectories[render_frame_idx, :, 3:7].clone()
+                    new_scaling_render_k = trajectories[render_frame_idx, :, 7:].clone()
+                    new_xyz_render_k[batch_indices] = pred_at_k[:, :3]
+                    new_rotation_render_k[batch_indices] = pred_at_k[:, 3:7]
+                    new_scaling_render_k[batch_indices] = pred_at_k[:, 7:]
+                render_pkg_k = render_ode(
+                    viewpoint_cam_k, gaussians, pipe, background,
+                    new_xyz_render_k, new_rotation_render_k, new_scaling_render_k,
+                    dataset.is_6dof
+                )
+                render_pkgs.append(render_pkg_k)
+                image_k = render_pkg_k["render"]
+                gt_image_k = viewpoint_cam_k.original_image.cuda()
+                Ll1_k = l1_loss(image_k, gt_image_k)
+                rendering_loss_k = (1.0 - opt.lambda_dssim) * Ll1_k + opt.lambda_dssim * (1.0 - ssim(image_k, gt_image_k))
+                rendering_losses.append(rendering_loss_k)
+            
+            avg_rendering_loss = torch.mean(torch.stack(rendering_losses))
+            scaled_ode_loss = loss * ode_weight
+            scaled_render_loss = avg_rendering_loss * render_weight
+            total_loss = scaled_ode_loss + scaled_render_loss
         
-        scaled_ode_loss = loss * ode_weight
-        scaled_render_loss = avg_rendering_loss * render_weight
-
-        total_loss = scaled_ode_loss + scaled_render_loss
         total_loss.backward()
-        
         iter_end.record()
         
         with torch.no_grad():
@@ -200,7 +235,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
                     gaussians.reset_opacity()
             
             if tb_writer:
-                tb_writer.add_scalar('train_loss/transformer_ode_loss', scaled_ode_loss.item(), iteration)
+                if iteration <= warmup_iterations:
+                    tb_writer.add_scalar('train_loss/warmup_loss', warmup_loss.item(), iteration)
+                else:
+                    tb_writer.add_scalar('train_loss/transformer_ode_loss', scaled_ode_loss.item(), iteration)
                 tb_writer.add_scalar('train_loss/avg_rendering_loss', scaled_render_loss.item(), iteration)
                 tb_writer.add_scalar('train_loss/total_loss', total_loss.item(), iteration)
                 tb_writer.add_scalar('iter_time', iter_start.elapsed_time(iter_end), iteration)
@@ -392,9 +430,14 @@ if __name__ == "__main__":
     parser.add_argument('--custom_iterations', type=int, default=None)
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--xyz_only', action='store_true', default=False, help="Use only XYZ coordinates for ODE and DeformModel")
+    parser.add_argument('--warmup_iterations', type=int, default=500, help="Number of iterations for warmup phase using transformer_only_reconstruction")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.custom_iterations)
     op_original = op.extract(args)
     if args.custom_iterations is not None:
         op_original.iterations = args.custom_iterations
-    training(lp.extract(args), op_original, pp.extract(args), args.test_iterations, args.save_iterations, args.train_gaussians, args.window_length, args.obs_length, args.batch_size, args.render_interval, args.val_batch_size, args.trajectory_path, args.learning_rate, args.xyz_only)
+    training(
+        lp.extract(args), op_original, pp.extract(args), args.test_iterations, args.save_iterations,
+        args.train_gaussians, args.window_length, args.obs_length, args.batch_size, args.render_interval,
+        args.val_batch_size, args.trajectory_path, args.learning_rate, args.xyz_only, args.warmup_iterations
+    )

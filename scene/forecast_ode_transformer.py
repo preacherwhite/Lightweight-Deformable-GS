@@ -54,10 +54,10 @@ class LatentODEfunc(nn.Module):
         self.fc1 = nn.Linear(latent_dim, nhidden)
         self.middle_layers = nn.ModuleList([nn.Linear(nhidden, nhidden) for _ in range(num_layers - 2)])
         self.fc_final = nn.Linear(nhidden, latent_dim)
-        self.nfe = 0
+        #self.nfe = 0
 
     def forward(self, t, x):
-        self.nfe += 1
+        #self.nfe += 1
         out = self.fc1(x)
         out = self.elu(out)
         for layer in self.middle_layers:
@@ -268,3 +268,49 @@ class TransformerLatentODEWrapper(nn.Module):
         pred_z = pred_z.permute(1, 0, 2)
         pred_x = self.decoder(pred_z)
         return pred_x
+    
+    def transformer_only_reconstruction(self, obs_traj):
+        """
+        Uses only the transformer encoder-decoder to produce latent from the first frame and compute reconstruction loss
+        for the first frame only.
+        Args:
+            obs_traj: Tensor (B, obs_length, obs_dim)
+        Returns:
+            recon_loss: Scalar reconstruction loss for the first frame
+            pred_x_first: Predicted first frame (B, obs_dim)
+        """
+        B, T_obs, _ = obs_traj.size()
+        device = obs_traj.device
+
+        # Embed and encode observed trajectory
+        x = self.value_embedding(obs_traj)  # (B, T_obs, d_model)
+        pos_emb = self.positional_embedding(obs_traj.shape, past_key_values_length=0)  # (T_obs, d_model)
+        pos_emb = pos_emb.unsqueeze(0).expand(B, -1, -1)
+        x = x + pos_emb
+        x = x.transpose(0, 1)  # (T_obs, B, d_model)
+        encoded = self.transformer_encoder(x)  # (T_obs, B, d_model)
+        
+        # Use only the first frame's encoding
+        h_first = encoded[0]  # (B, d_model) - first time step
+        z_params = self.initial_state_projection(h_first)  # (B, 2 * latent_dim)
+        qz0_mean, qz0_logvar = z_params.chunk(2, dim=-1)
+        
+        # Sample latent (using reparameterization trick)
+        epsilon = torch.randn_like(qz0_mean)
+        z0 = qz0_mean + epsilon * torch.exp(0.5 * qz0_logvar)  # (B, latent_dim)
+        
+        # Decode only the first frame's latent
+        pred_x_first = self.decoder(z0)  # (B, obs_dim)
+        
+        # Compute reconstruction loss for the first frame only
+        noise_logvar = 2 * torch.log(torch.tensor(self.noise_std, device=device))
+        logpx = log_normal_pdf(obs_traj[:, 0, :], pred_x_first, noise_logvar)  # Compare with first frame of obs_traj
+        recon_loss = -logpx.sum(dim=1).mean()  # Sum over features, mean over batch
+        
+        # KL divergence for regularization
+        kl_loss = normal_kl(qz0_mean, qz0_logvar,
+                           torch.zeros_like(qz0_mean),
+                           torch.zeros_like(qz0_logvar)).sum(dim=1).mean()
+        
+        total_loss = recon_loss + kl_loss
+        return total_loss, pred_x_first
