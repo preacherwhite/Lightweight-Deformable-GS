@@ -215,9 +215,9 @@ def perform_model_evaluation(transformer_ode, gaussians, pipe, background, datas
             
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_gaussians=False, 
           window_length=40, obs_length=20, batch_size=1024, render_interval=4, 
-          val_batch_size=8192, trajectory_path=None, learning_rate=1e-3, 
+          val_batch_size=8192,learning_rate=1e-3, 
           xyz_only=False, warmup_iterations=500, continuous_time_sampling=True, 
-          ode_only_ratio=0.7):
+          ode_only_ratio=0.7, render_weight=1, warmup_weight=1, ode_weight=1e-3):
     """
     Main training function for Transformer-ODE model.
     
@@ -273,11 +273,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
     iter_start = torch.cuda.Event(enable_timing=True)
     iter_end = torch.cuda.Event(enable_timing=True)
     progress_bar = tqdm(range(opt.iterations), desc="Training progress")
-    
-    # Loss balancing parameters
-    ode_weight = 1e-3
-    render_weight = 1
-    warmup_weight = 1  # Weight for warmup reconstruction loss
+
     fixed_val_indices = [0, 5, 10, 15, 20][:len(val_cameras)]
     
     # Best model tracking
@@ -485,8 +481,10 @@ if __name__ == "__main__":
     parser.add_argument('--xyz_only', action='store_true', default=False, help="Use only XYZ coordinates for ODE and DeformModel")
     parser.add_argument('--warmup_iterations', type=int, default=500, help="Number of iterations for warmup phase using transformer_only_reconstruction")
     parser.add_argument('--continuous_time_sampling', action='store_true', default=True, help="Use continuous time sampling instead of discrete")
-    parser.add_argument('--ode_only_ratio', type=float, default=0.7, help="Ratio of ODE-only training vs rendering-included training")
-    
+    parser.add_argument('--ode_only_ratio', type=float, default=0.5, help="Ratio of ODE-only training vs rendering-included training")
+    parser.add_argument('--render_weight', type=float, default=10, help="Weight for rendering loss")
+    parser.add_argument('--warmup_weight', type=float, default=10, help="Weight for warmup loss")
+    parser.add_argument('--ode_weight', type=float, default=1e-3, help="Weight for ODE loss")
     args = parser.parse_args(sys.argv[1:])
     if args.custom_iterations is not None:
         args.save_iterations.append(args.custom_iterations)
@@ -508,6 +506,7 @@ if __name__ == "__main__":
         args.test_iterations, args.save_iterations,
         args.train_gaussians, args.window_length, args.obs_length, 
         args.batch_size, args.render_interval, args.val_batch_size, 
-        args.trajectory_path, args.learning_rate, args.xyz_only, 
-        args.warmup_iterations, args.continuous_time_sampling, args.ode_only_ratio
+         args.learning_rate, args.xyz_only, 
+        args.warmup_iterations, args.continuous_time_sampling, args.ode_only_ratio,
+        args.render_weight, args.warmup_weight, args.ode_weight
     )
