@@ -3,8 +3,8 @@ import numpy as np
 import torch.nn as nn
 from torch.utils.data import Dataset
 from torchdiffeq import odeint
-
-
+import torch.nn.functional as F
+import torchode as to
 USE_ADAPTIVE = True
 def log_normal_pdf(x, mean, logvar):
     const = torch.log(torch.tensor(2. * np.pi, device=x.device))
@@ -50,7 +50,7 @@ class TimeSeriesSinusoidalPositionalEmbedding(nn.Embedding):
 class LatentODEfunc(nn.Module):
     def __init__(self, latent_dim=4, nhidden=20, num_layers=2):
         super(LatentODEfunc, self).__init__()
-        self.elu = nn.ELU(inplace=True)
+        self.relu = nn.ReLU(inplace=True)
         self.fc1 = nn.Linear(latent_dim, nhidden)
         self.middle_layers = nn.ModuleList([nn.Linear(nhidden, nhidden) for _ in range(num_layers - 2)])
         self.fc_final = nn.Linear(nhidden, latent_dim)
@@ -59,10 +59,10 @@ class LatentODEfunc(nn.Module):
     def forward(self, t, x):
         #self.nfe += 1
         out = self.fc1(x)
-        out = self.elu(out)
+        out = self.relu(out)
         for layer in self.middle_layers:
             out = layer(out)
-            out = self.elu(out)
+            out = self.relu(out)
         out = self.fc_final(out)
         return out
 
@@ -106,30 +106,53 @@ class TrajectoryWindowDataset(Dataset):
 # Transformer-based Latent ODE Wrapper Model
 # --------------------------
 class TransformerLatentODEWrapper(nn.Module):
-    def __init__(self, latent_dim, d_model, nhead, num_encoder_layers,
-                 ode_nhidden, decoder_nhidden, obs_dim, noise_std, ode_layers):
+    def __init__(self, latent_dim, d_model, nhead, num_encoder_layers,num_decoder_layers,
+                 ode_nhidden, decoder_nhidden, obs_dim, noise_std, ode_layers, reg_weight, variational_inference, use_torchode):
         super(TransformerLatentODEWrapper, self).__init__()
+        print("initialzing TransformerLatentOdeWrapper")
+        print("latent_dim: ", latent_dim)
+        print("d_model: ", d_model)
+        print("nhead: ", nhead)
+        print("num_encoder_layers: ", num_encoder_layers)
+        print("num_decoder_layers: ", num_decoder_layers)
+        print("ode_nhidden: ", ode_nhidden)
+        print("decoder_nhidden: ", decoder_nhidden)
+        print("obs_dim: ", obs_dim)
+        print("noise_std: ", noise_std)
+        print("ode_layers: ", ode_layers)
+        print("reg_weight: ", reg_weight)
         self.latent_dim = latent_dim
         self.noise_std = noise_std
         self.obs_dim = obs_dim
-        
+        self.reg_weight = reg_weight
+        self.variational_inference = variational_inference
         # Recognition: transformer encoder to encode the observed trajectory
         self.value_embedding = nn.Linear(obs_dim, d_model)
         self.positional_embedding = TimeSeriesSinusoidalPositionalEmbedding(num_positions=500, embedding_dim=d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=d_model*4, dropout=0.1)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
-        self.initial_state_projection = nn.Linear(d_model, 2 * latent_dim)
+        if self.variational_inference:
+            self.initial_state_projection = nn.Linear(d_model, 2 * latent_dim)
+        else:
+            self.initial_state_projection = nn.Linear(d_model, latent_dim)
         
         # Latent ODE dynamics
         self.func = LatentODEfunc(latent_dim, ode_nhidden, num_layers=ode_layers)
-        
+        if use_torchode:
+            term = to.ODETerm(self.func)
+            step_method = to.Dopri5(term=term)
+            step_size_controller = to.IntegralController(atol=1e-5, rtol=1e-3, term=term)
+            self.adjoint = to.AutoDiffAdjoint(step_method, step_size_controller)
+        self.use_torchode = use_torchode
         # Decoder to map latent state to observation space
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, decoder_nhidden),
-            nn.ReLU(),
-            nn.Linear(decoder_nhidden, obs_dim)
-        )
-
+        decoder_layers = []
+        decoder_layers.append(nn.Linear(latent_dim, decoder_nhidden))
+        decoder_layers.append(nn.ReLU())
+        for _ in range(num_decoder_layers - 1):
+            decoder_layers.append(nn.Linear(decoder_nhidden, decoder_nhidden))
+            decoder_layers.append(nn.ReLU())
+        decoder_layers.append(nn.Linear(decoder_nhidden, obs_dim))
+        self.decoder = nn.Sequential(*decoder_layers)
     def _filter_unique_times(self, times):
         """
         Filter out duplicate timestamps and return unique, strictly increasing times along with mapping indices.
@@ -178,7 +201,6 @@ class TransformerLatentODEWrapper(nn.Module):
             loss and predicted full trajectory (B, window_length, obs_dim)
         """
         B, T_obs, _ = obs_traj.size()
-        T_target = target_traj.size(1)
         device = obs_traj.device
 
         # Recognition: embed and encode observed trajectory
@@ -190,9 +212,12 @@ class TransformerLatentODEWrapper(nn.Module):
         encoded = self.transformer_encoder(x)  # (T_obs, B, d_model)
         h = encoded[-1]  # (B, d_model)
         z_params = self.initial_state_projection(h)  # (B, 2 * latent_dim)
-        qz0_mean, qz0_logvar = z_params.chunk(2, dim=-1)
-        epsilon = torch.randn_like(qz0_mean)
-        z0 = qz0_mean + epsilon * torch.exp(0.5 * qz0_logvar)
+        if self.variational_inference:
+            qz0_mean, qz0_logvar = z_params.chunk(2, dim=-1)
+            epsilon = torch.randn_like(qz0_mean)
+            z0 = qz0_mean + epsilon * torch.exp(0.5 * qz0_logvar)
+        else:
+            z0 = z_params
         
         # Filter unique times and get mapping
         full_time = full_time[0]  # Remove batch dimension if present
@@ -200,13 +225,24 @@ class TransformerLatentODEWrapper(nn.Module):
         
         # ODE integration with unique times
         if USE_ADAPTIVE:
-            pred_z_unique = odeint(self.func, z0, unique_times)  # (unique_length, B, latent_dim)
-            
+            if self.use_torchode:
+                # expand unique_times to match the shape of z0
+                problem = to.InitialValueProblem(y0=z0, t_eval=unique_times.unsqueeze(0).expand(B, -1))
+                sol = self.adjoint.solve(problem)
+                pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (B, unique_length, latent_dim)
+                
+            else:
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-3, atol=1e-5)  # (unique_length, B, latent_dim)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
             pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', options=dict(step_size=step_size))  # (unique_length, B, latent_dim)
         
+        reg_loss = torch.tensor(0.0, device=device)
+        if self.reg_weight > 0:
+            reg_loss, _ = self.compute_derivative_regularization(pred_z_unique, unique_times)
+            reg_loss = reg_loss * self.reg_weight
+
         # Reconstruct full trajectory with duplicates
         pred_z = self._reconstruct_trajectory(pred_z_unique, mapping_indices, len(full_time))
         pred_z = pred_z.permute(1, 0, 2)  # (B, window_length, latent_dim)
@@ -217,16 +253,23 @@ class TransformerLatentODEWrapper(nn.Module):
         pred_x_target = pred_x[:, T_obs:, :]
         
         # Losses
-        noise_logvar = 2 * torch.log(torch.tensor(self.noise_std, device=device))
-        logpx_obs = log_normal_pdf(obs_traj, pred_x_obs, noise_logvar)
-        recon_loss = -logpx_obs.sum(dim=2).sum(dim=1).mean()
-        logpx_target = log_normal_pdf(target_traj, pred_x_target, noise_logvar)
-        pred_loss = -logpx_target.sum(dim=2).sum(dim=1).mean()
-        kl_loss = normal_kl(qz0_mean, qz0_logvar,
-                            torch.zeros_like(qz0_mean),
-                            torch.zeros_like(qz0_logvar)).sum(dim=1).mean()
-        loss = recon_loss + pred_loss + kl_loss
-        return loss, pred_x
+        if self.variational_inference:
+            noise_logvar = 2 * torch.log(torch.tensor(self.noise_std, device=device))
+            logpx_obs = log_normal_pdf(obs_traj, pred_x_obs, noise_logvar)
+            recon_loss = -logpx_obs.sum(dim=2).sum(dim=1).mean()
+            logpx_target = log_normal_pdf(target_traj, pred_x_target, noise_logvar)
+            pred_loss = -logpx_target.sum(dim=2).sum(dim=1).mean()
+            kl_loss = normal_kl(qz0_mean, qz0_logvar,
+                                torch.zeros_like(qz0_mean),
+                                torch.zeros_like(qz0_logvar)).sum(dim=1).mean()
+            loss = recon_loss + pred_loss + kl_loss + reg_loss
+        else:
+            # deterministic prediction, use mse loss
+            recon_loss = F.mse_loss(pred_x_target, target_traj)
+            pred_loss = F.mse_loss(pred_x_obs, obs_traj)
+            loss = recon_loss + pred_loss + reg_loss
+            kl_loss = 0
+        return loss, recon_loss, pred_loss, kl_loss, reg_loss, pred_x
 
     def extrapolate(self, obs_traj, obs_time, extrapolate_time):
         """
@@ -247,9 +290,12 @@ class TransformerLatentODEWrapper(nn.Module):
         x = x.transpose(0, 1)
         encoded = self.transformer_encoder(x)
         h = encoded[-1]
-        z_params = self.initial_state_projection(h)
-        qz0_mean, _ = z_params.chunk(2, dim=-1)
-        z0 = qz0_mean  # use mean for deterministic prediction
+        if self.variational_inference:
+            z_params = self.initial_state_projection(h)
+            qz0_mean, _ = z_params.chunk(2, dim=-1)
+            z0 = qz0_mean  # use mean for deterministic prediction
+        else:
+            z0 = self.initial_state_projection(h)
         
         # Filter unique times and get mapping
         full_time = torch.cat([obs_time, extrapolate_time])
@@ -257,7 +303,13 @@ class TransformerLatentODEWrapper(nn.Module):
         
         # ODE integration with unique times
         if USE_ADAPTIVE:
-            pred_z_unique = odeint(self.func, z0, unique_times)
+            if self.use_torchode:
+                # expand unique_times to match the shape of z0
+                problem = to.InitialValueProblem(y0=z0, t_eval=unique_times.unsqueeze(0).expand(B, -1))
+                sol = self.adjoint.solve(problem)
+                pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (B, unique_length, latent_dim)
+            else:
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-3, atol=1e-5)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
@@ -293,24 +345,45 @@ class TransformerLatentODEWrapper(nn.Module):
         # Use only the first frame's encoding
         h_first = encoded[0]  # (B, d_model) - first time step
         z_params = self.initial_state_projection(h_first)  # (B, 2 * latent_dim)
-        qz0_mean, qz0_logvar = z_params.chunk(2, dim=-1)
-        
-        # Sample latent (using reparameterization trick)
-        epsilon = torch.randn_like(qz0_mean)
-        z0 = qz0_mean + epsilon * torch.exp(0.5 * qz0_logvar)  # (B, latent_dim)
+        if self.variational_inference:
+            qz0_mean, qz0_logvar = z_params.chunk(2, dim=-1)
+            epsilon = torch.randn_like(qz0_mean)
+            z0 = qz0_mean + epsilon * torch.exp(0.5 * qz0_logvar)  # (B, latent_dim)
+        else:
+            z0 = z_params
         
         # Decode only the first frame's latent
         pred_x_first = self.decoder(z0)  # (B, obs_dim)
         
         # Compute reconstruction loss for the first frame only
-        noise_logvar = 2 * torch.log(torch.tensor(self.noise_std, device=device))
-        logpx = log_normal_pdf(obs_traj[:, 0, :], pred_x_first, noise_logvar)  # Compare with first frame of obs_traj
-        recon_loss = -logpx.sum(dim=1).mean()  # Sum over features, mean over batch
-        
-        # KL divergence for regularization
-        kl_loss = normal_kl(qz0_mean, qz0_logvar,
-                           torch.zeros_like(qz0_mean),
-                           torch.zeros_like(qz0_logvar)).sum(dim=1).mean()
+        if self.variational_inference:
+            noise_logvar = 2 * torch.log(torch.tensor(self.noise_std, device=device))
+            logpx = log_normal_pdf(obs_traj[:, 0, :], pred_x_first, noise_logvar)  # Compare with first frame of obs_traj
+            recon_loss = -logpx.sum(dim=1).mean()  # Sum over features, mean over batch
+            kl_loss = normal_kl(qz0_mean, qz0_logvar,
+                               torch.zeros_like(qz0_mean),
+                               torch.zeros_like(qz0_logvar)).sum(dim=1).mean()
+        else:
+            recon_loss = F.mse_loss(pred_x_first, obs_traj[:, 0, :])
+            kl_loss = 0
         
         total_loss = recon_loss + kl_loss
         return total_loss, pred_x_first
+    
+    def compute_derivative_regularization(self, trajectory, t):
+        # Detach trajectory points to focus regularization on function behavior only
+        detached_states = [state.detach() for state in trajectory]
+        
+        # Calculate derivatives at each point
+        derivatives = []
+        for i, time in enumerate(t):
+            derivative = self.func(time, detached_states[i])
+            derivatives.append(derivative)
+        
+        derivatives = torch.stack(derivatives)
+        
+        # Measure consistency between consecutive derivative evaluations
+        derivative_changes = torch.diff(derivatives, dim=0)
+        reg_loss = torch.mean(torch.square(derivative_changes))
+        
+        return reg_loss, derivatives

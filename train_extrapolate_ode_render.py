@@ -17,7 +17,8 @@ from utils.image_utils import psnr
 from utils.ode_loss_utils import compute_warmup_losses, compute_normal_losses, compute_continuous_warmup_losses, compute_continuous_normal_losses
 from utils.ode_sampling_utils import sample_ode_only_fids, sample_rendering_included_fids, sample_discrete_trajectories
 from utils.ode_load_utils import load_or_generate_trajectories, load_models
-def prepare_output_and_logger(args):
+
+def prepare_output_and_logger(args, log_directory=None):
     """Set up output directory and TensorBoard logger."""
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
@@ -29,16 +30,25 @@ def prepare_output_and_logger(args):
     os.makedirs(args.model_path, exist_ok=True)
     with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
         cfg_log_f.write(str(Namespace(**vars(args))))
-    log_dir = os.path.join(args.model_path, "logs")
+    if log_directory is None:
+        log_dir = os.path.join(args.model_path, "logs")
+    else:
+        log_dir = os.path.join(args.model_path, log_directory)
     os.makedirs(log_dir, exist_ok=True)
     return SummaryWriter(log_dir)
 
-def setup_training(dataset, gaussians, train_gaussians, opt, learning_rate):
+def setup_training(dataset, gaussians, train_gaussians, opt,
+                    learning_rate, latent_dim, d_model, nhead,
+                      num_encoder_layers, num_decoder_layers, 
+                      ode_nhidden, decoder_nhidden, noise_std, 
+                      ode_layers, reg_weight,
+                    variational_inference, use_torchode):
     """Set up training configurations and optimizers."""
     obs_dim = 3 if dataset.xyz_only else 10
     transformer_ode = TransformerLatentODEWrapper(
-        latent_dim=10, d_model=128, nhead=8, num_encoder_layers=5,
-        ode_nhidden=20, decoder_nhidden=128, obs_dim=obs_dim, noise_std=0.1, ode_layers=1
+        latent_dim=latent_dim, d_model=d_model, nhead=nhead, num_encoder_layers=num_encoder_layers,num_decoder_layers=num_decoder_layers,
+        ode_nhidden=ode_nhidden, decoder_nhidden=decoder_nhidden, obs_dim=obs_dim, noise_std=noise_std,
+        ode_layers=ode_layers, reg_weight=reg_weight, variational_inference=variational_inference, use_torchode=use_torchode
     ).cuda()
     
     if train_gaussians:
@@ -209,15 +219,18 @@ def perform_model_evaluation(transformer_ode, gaussians, pipe, background, datas
             psnr_sum += psnr_test.item()
             psnr_count += 1
     
-        avg_psnr = psnr_sum / psnr_count if psnr_count > 0 else -float('inf')
-        torch.cuda.empty_cache()
-        return avg_psnr  # Ensure this is returned in all paths
-            
+    avg_psnr = psnr_sum / psnr_count if psnr_count > 0 else -float('inf')
+    torch.cuda.empty_cache()
+    return avg_psnr  # Ensure this is returned in all paths
+       
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_gaussians=False, 
           window_length=40, obs_length=20, batch_size=1024, render_interval=4, 
           val_batch_size=8192,learning_rate=1e-3, 
           xyz_only=False, warmup_iterations=500, continuous_time_sampling=True, 
-          ode_only_ratio=0.7, render_weight=1, warmup_weight=1, ode_weight=1e-3):
+          ode_only_ratio=0.7, render_weight=1, warmup_weight=1, ode_weight=1e-3, reg_weight=1e-3,
+          latent_dim=10, d_model=128, nhead=8, num_encoder_layers=5, num_decoder_layers=5, ode_nhidden=20, decoder_nhidden=128, noise_std=0.1, ode_layers=1, variational_inference=True,
+          log_directory=None, use_torchode=False):
     """
     Main training function for Transformer-ODE model.
     
@@ -239,10 +252,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
         warmup_iterations: Number of iterations for warmup phase
         continuous_time_sampling: Whether to use continuous time sampling
         ode_only_ratio: Ratio of ODE-only training
+        variational_inference: Whether to use variational inference for ODE
     """
     # Setup
     print("Preparing output and logger")
-    tb_writer = prepare_output_and_logger(dataset)
+    tb_writer = prepare_output_and_logger(dataset, log_directory)
     
     # Load models
     print("Loading models")
@@ -251,7 +265,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
     # Set up optimizers and initialize Transformer-ODE
     print("Setting up optimizers and initializing Transformer-ODE")
     transformer_ode, transformer_ode_optimizer, background = setup_training(
-        dataset, gaussians, train_gaussians, opt, learning_rate
+        dataset, gaussians, train_gaussians,
+          opt, learning_rate, latent_dim, d_model,
+            nhead, num_encoder_layers, num_decoder_layers,
+              ode_nhidden, decoder_nhidden, noise_std,
+                ode_layers, reg_weight, variational_inference, use_torchode
     )
     print("Setting up optimizers and initializing Transformer-ODE complete")
     total_gaussians = gaussians.get_xyz.shape[0]
@@ -287,7 +305,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
         
         # Decide training mode: ODE-only or rendering-included
         do_ode_only = torch.rand(1).item() < ode_only_ratio
-        
+        pred_traj = None
         if continuous_time_sampling:
             # Continuous time sampling approach
             if do_ode_only:
@@ -309,7 +327,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
                     scaled_ode_loss = total_loss
                     scaled_render_loss = torch.tensor(0.0)
                 else:
-                    loss, _ = transformer_ode(obs_traj, target_traj, full_time)
+                    loss, recon_loss, pred_loss, kl_loss, reg_loss, pred_traj = transformer_ode.forward(obs_traj, target_traj, full_time)
                     total_loss = loss * ode_weight
                     scaled_ode_loss = total_loss
                     scaled_render_loss = torch.tensor(0.0)
@@ -336,16 +354,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
                 
                 # Compute loss based on training phase
                 if iteration <= warmup_iterations:
+                    loss, pred_traj = transformer_ode.transformer_only_reconstruction(obs_traj[batch_indices])
+                    
                     total_loss, warmup_loss, scaled_render_loss, render_pkgs = compute_continuous_warmup_losses(
-                        transformer_ode, obs_traj, warmup_weight, render_weight, opt,
+                        loss, pred_traj, warmup_weight, render_weight, opt,
                         train_cameras, fids, selected_fids, selected_cam_indices,
                         batch_indices, traj_gt, gaussians, pipe, background, xyz_only,
                         dataset, deform
                     )
                     scaled_ode_loss = warmup_loss
                 else:
+                    loss, recon_loss, pred_loss, kl_loss, reg_loss, pred_traj = transformer_ode.forward(obs_traj[batch_indices], target_traj[batch_indices], full_time)
                     total_loss, scaled_ode_loss, scaled_render_loss, render_pkgs = compute_continuous_normal_losses(
-                        transformer_ode, obs_traj, target_traj, full_time, fids, 
+                        loss, pred_traj, fids, 
                         selected_fids, selected_cam_indices, train_cameras, batch_indices, 
                         traj_gt, total_gaussians, gaussians, deform, pipe, background, 
                         xyz_only, dataset, ode_weight, render_weight, opt
@@ -358,19 +379,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
             
             # Compute loss based on training phase
             if iteration <= warmup_iterations:
+                loss, pred_traj = transformer_ode.transformer_only_reconstruction(obs_traj[batch_indices])
                 total_loss, warmup_loss, scaled_render_loss, render_pkgs = compute_warmup_losses(
-                    transformer_ode, obs_traj, warmup_weight, render_weight, opt,
+                    loss, pred_traj, warmup_weight, render_weight, opt,
                     train_cameras, viewpoint_indices, batch_indices, train_trajectories,
                     gaussians, pipe, background, xyz_only, dataset
                 )
                 scaled_ode_loss = warmup_loss
             else:
+                loss, recon_loss, pred_loss, kl_loss, reg_loss, pred_traj = transformer_ode.forward(obs_traj[batch_indices], target_traj[batch_indices], full_time)
                 total_loss, scaled_ode_loss, scaled_render_loss, render_pkgs = compute_normal_losses(
-                    transformer_ode, obs_traj, target_traj, full_time, ode_weight, render_weight, opt,
-                    train_cameras, viewpoint_indices, batch_indices, train_trajectories,
-                    gaussians, pipe, background, xyz_only, dataset, render_interval, window_length
+                    loss, pred_traj, fids, 
+                    selected_fids, selected_cam_indices, train_cameras, batch_indices, 
+                    traj_gt, total_gaussians, gaussians, deform, pipe, background, 
+                    xyz_only, dataset, ode_weight, render_weight, opt
                 )
-        
         # Backward pass
         total_loss.backward()
         iter_end.record()
@@ -407,6 +430,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
                     tb_writer.add_scalar('train_loss/warmup_loss', scaled_ode_loss.item(), iteration)
                 else:
                     tb_writer.add_scalar('train_loss/transformer_ode_loss', scaled_ode_loss.item(), iteration)
+                    tb_writer.add_scalar('train_loss/ode_recon_loss', recon_loss.item()*ode_weight, iteration)
+                    tb_writer.add_scalar('train_loss/ode_pred_loss', pred_loss.item()*ode_weight, iteration)
+                    if variational_inference:
+                        tb_writer.add_scalar('train_loss/ode_kl_loss', kl_loss.item()*ode_weight, iteration)
+                    tb_writer.add_scalar('train_loss/ode_reg_loss', reg_loss.item()*ode_weight, iteration)
                 tb_writer.add_scalar('train_loss/avg_rendering_loss', scaled_render_loss.item(), iteration)
                 tb_writer.add_scalar('train_loss/total_loss', total_loss.item(), iteration)
                 tb_writer.add_scalar('iter_time', iter_start.elapsed_time(iter_end), iteration)
@@ -422,7 +450,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, train_ga
         
         # Save model at specified iterations
         if iteration in saving_iterations:
-            save_dir = os.path.join(dataset.model_path, "extrapolate_model", f"iteration_{iteration}")
+            if log_directory is None:
+                save_dir = os.path.join(dataset.model_path,"extrapolate_model", f"iteration_{iteration}")
+            else:
+                save_dir = os.path.join(dataset.model_path, log_directory, f"iteration_{iteration}")
             os.makedirs(save_dir, exist_ok=True)
             save_path = os.path.join(save_dir, "model.pth")
             torch.save({
@@ -479,12 +510,29 @@ if __name__ == "__main__":
     parser.add_argument('--custom_iterations', type=int, default=None)
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--xyz_only', action='store_true', default=False, help="Use only XYZ coordinates for ODE and DeformModel")
-    parser.add_argument('--warmup_iterations', type=int, default=500, help="Number of iterations for warmup phase using transformer_only_reconstruction")
+    parser.add_argument('--warmup_iterations', type=int, default=100, help="Number of iterations for warmup phase using transformer_only_reconstruction")
     parser.add_argument('--continuous_time_sampling', action='store_true', default=True, help="Use continuous time sampling instead of discrete")
     parser.add_argument('--ode_only_ratio', type=float, default=0.5, help="Ratio of ODE-only training vs rendering-included training")
     parser.add_argument('--render_weight', type=float, default=10, help="Weight for rendering loss")
     parser.add_argument('--warmup_weight', type=float, default=10, help="Weight for warmup loss")
-    parser.add_argument('--ode_weight', type=float, default=1e-3, help="Weight for ODE loss")
+    parser.add_argument('--ode_weight', type=float, default=1, help="Weight for ODE loss")
+    parser.add_argument('--reg_weight', type=float, default=0, help="Weight for regularization loss")
+    
+    parser.add_argument('--nhead', type=int, default=8, help="Number of attention heads for ODE")
+    parser.add_argument('--num_encoder_layers', type=int, default=2, help="Number of encoder layers for transformer")
+    parser.add_argument('--num_decoder_layers', type=int, default=2, help="Number of decoder layers for transformer")
+    parser.add_argument('--ode_nhidden', type=int, default=16, help="Number of hidden units for ODE")
+    parser.add_argument('--latent_dim', type=int, default=64, help="Latent dimension for ODE")
+    parser.add_argument('--ode_layers', type=int, default=2, help="Number of ODE layers")
+    parser.add_argument('--encoder_nhidden', type=int, default=64, help="Model dimension for encoder")
+    parser.add_argument('--decoder_nhidden', type=int, default=64, help="Number of hidden units for decoder for ODE")
+
+    parser.add_argument('--noise_std', type=float, default=0.001, help="Noise standard deviation for ODE")
+    parser.add_argument('--var_inf', action='store_true', default=False, help="Use variational inference for ODE")
+
+    parser.add_argument('--log_directory', type=str, default=None, help="Log directory")
+    parser.add_argument('--use_torchode', action='store_true', default=False, help="Use torchode for ODE")
+
     args = parser.parse_args(sys.argv[1:])
     if args.custom_iterations is not None:
         args.save_iterations.append(args.custom_iterations)
@@ -508,5 +556,8 @@ if __name__ == "__main__":
         args.batch_size, args.render_interval, args.val_batch_size, 
          args.learning_rate, args.xyz_only, 
         args.warmup_iterations, args.continuous_time_sampling, args.ode_only_ratio,
-        args.render_weight, args.warmup_weight, args.ode_weight
+        args.render_weight, args.warmup_weight, args.ode_weight, args.reg_weight,
+        args.latent_dim, args.encoder_nhidden, args.nhead, args.num_encoder_layers,
+        args.num_decoder_layers, args.ode_nhidden, args.decoder_nhidden, args.noise_std, args.ode_layers, args.var_inf,
+        args.log_directory, args.use_torchode
     )

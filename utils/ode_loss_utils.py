@@ -58,13 +58,11 @@ def _compute_rendering_loss(viewpoint_cam, pred_values, batch_indices, trajector
     
     return scaled_loss, render_pkg
 
-def compute_warmup_losses(transformer_ode, obs_traj, warmup_weight, render_weight, opt, 
+def compute_warmup_losses(loss, pred_traj_first, warmup_weight, render_weight, opt, 
                          train_cameras, viewpoint_indices, batch_indices, trajectories, 
                          gaussians, pipe, background, xyz_only, dataset):
     """Compute losses during warmup phase."""
     # Transformer-only reconstruction
-    obs_traj = obs_traj[batch_indices,:]
-    loss, pred_traj_first = transformer_ode.transformer_only_reconstruction(obs_traj)
     warmup_loss = loss * warmup_weight
     
     # Rendering for the first frame only
@@ -82,14 +80,12 @@ def compute_warmup_losses(transformer_ode, obs_traj, warmup_weight, render_weigh
     
     return total_loss, warmup_loss, scaled_render_loss, render_pkgs
 
-def compute_continuous_warmup_losses(transformer_ode, obs_traj, warmup_weight, render_weight, opt,
+def compute_continuous_warmup_losses(loss,pred_traj_first, warmup_weight, render_weight, opt,
                                     train_cameras, fids, selected_fids, selected_cam_indices,
                                     batch_indices, traj_gt, gaussians, pipe, background, xyz_only,
                                     dataset, deform):
     """Compute losses during warmup phase for continuous sampling."""
     # Sample observation trajectory to use the batch indices
-    obs_traj = obs_traj[batch_indices,:]
-    loss, pred_traj_first = transformer_ode.transformer_only_reconstruction(obs_traj)
     warmup_loss = loss * warmup_weight
     
     # Find a camera frame to render, if available
@@ -123,13 +119,10 @@ def compute_continuous_warmup_losses(transformer_ode, obs_traj, warmup_weight, r
     
     return total_loss, warmup_loss, scaled_render_loss, render_pkgs
 
-def compute_normal_losses(transformer_ode, obs_traj, target_traj, full_time, ode_weight, render_weight, opt,
+def compute_normal_losses(loss, pred_traj, ode_weight, render_weight, opt,
                          train_cameras, viewpoint_indices, batch_indices, trajectories, gaussians, pipe,
                          background, xyz_only, dataset, render_interval, window_length):
     """Compute losses during normal training phase."""
-    obs_traj = obs_traj[batch_indices,:]
-    target_traj = target_traj[batch_indices,:]
-    loss, pred_traj = transformer_ode(obs_traj, target_traj, full_time)
     pred_traj = pred_traj.permute(1, 0, 2)
     
     # Rendering for training
@@ -159,15 +152,12 @@ def compute_normal_losses(transformer_ode, obs_traj, target_traj, full_time, ode
     
     return total_loss, scaled_ode_loss, scaled_render_loss, render_pkgs
 
-def compute_continuous_normal_losses(transformer_ode, obs_traj, target_traj, full_time, fids, 
+def compute_continuous_normal_losses(loss, pred_traj, fids, 
                                     selected_fids, selected_cam_indices, train_cameras, batch_indices, 
                                     traj_gt, total_gaussians, gaussians, deform, pipe, background, 
                                     xyz_only, dataset, ode_weight, render_weight, opt):
     """Compute losses during normal training phase for continuous sampling."""
     # Process observation trajectory
-    obs_traj = obs_traj[batch_indices,:]
-    target_traj = target_traj[batch_indices,:]
-    loss, pred_traj = transformer_ode(obs_traj, target_traj, full_time)
     pred_traj = pred_traj.permute(1, 0, 2)
     
     # Rendering for camera frames
