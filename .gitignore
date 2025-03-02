@@ -29,3 +29,7 @@ pretrained_weights
 *.npz.tar.gz.tar
 *.npz.tar.gz.tar.gz
 *.npz.tar.gz.tar.gz.tar
+
+*.log
+
+ext_exps
