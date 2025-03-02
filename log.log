@@ -1,0 +1,15 @@
+2025-02-28 22:37:48,557 ./log INFO Using 4 GPUs for DataParallel...
+2025-02-28 22:41:18,435 ./log INFO Using 4 GPUs for DataParallel...
+2025-02-28 22:44:45,842 ./log INFO Using 4 GPUs for DataParallel...
+2025-02-28 22:46:15,339 ./log INFO Using 4 GPUs for DataParallel...
+2025-02-28 22:47:29,743 ./log INFO Iter: 1, running loss: 10164.9229
+2025-02-28 22:47:29,752 ./log INFO Stored ckpt at ./ckpt_Contiformer.pth
+2025-02-28 22:48:31,930 ./log INFO Loaded ckpt from ./ckpt_Contiformer.pth
+2025-02-28 22:48:39,088 ./log INFO Iter: 2, running loss: 4115.8291
+2025-02-28 22:48:39,097 ./log INFO Stored ckpt at ./ckpt_Contiformer.pth
+2025-02-28 22:50:44,379 ./log INFO Loaded ckpt from ./ckpt_Contiformer.pth
+2025-02-28 22:50:45,154 ./log INFO Iter: 3, running loss: 186.8751
+2025-02-28 22:50:45,163 ./log INFO Stored ckpt at ./ckpt_Contiformer.pth
+2025-02-28 22:51:42,237 ./log INFO Loaded ckpt from ./ckpt_Contiformer.pth
+2025-02-28 22:51:43,032 ./log INFO Iter: 4, running loss: 157.2194
+2025-02-28 22:51:43,040 ./log INFO Stored ckpt at ./ckpt_Contiformer.pth

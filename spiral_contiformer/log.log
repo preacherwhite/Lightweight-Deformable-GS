@@ -1,0 +1,127 @@
+2025-02-28 23:23:59,651 ./spiral_contiformer/log INFO Iter: 1, running loss: 8342.1465
+2025-02-28 23:23:59,658 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:24:13,609 ./spiral_contiformer/log INFO Iter: 1, MAE: 0.9515, RMSE: 0.7862
+2025-02-28 23:24:13,615 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:24:21,579 ./spiral_contiformer/log INFO Iter: 2, running loss: 8318.1713
+2025-02-28 23:24:21,586 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:24:35,293 ./spiral_contiformer/log INFO Iter: 2, MAE: 0.9267, RMSE: 0.7814
+2025-02-28 23:24:35,299 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:24:43,273 ./spiral_contiformer/log INFO Iter: 3, running loss: 8294.7378
+2025-02-28 23:24:43,281 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:24:57,019 ./spiral_contiformer/log INFO Iter: 3, MAE: 0.4706, RMSE: 0.4044
+2025-02-28 23:24:57,025 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:25:05,216 ./spiral_contiformer/log INFO Iter: 4, running loss: 8227.4967
+2025-02-28 23:25:05,224 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:25:18,952 ./spiral_contiformer/log INFO Iter: 4, MAE: 0.5287, RMSE: 0.4484
+2025-02-28 23:25:26,963 ./spiral_contiformer/log INFO Iter: 5, running loss: 8164.5393
+2025-02-28 23:25:26,971 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:25:40,696 ./spiral_contiformer/log INFO Iter: 5, MAE: 0.5127, RMSE: 0.4316
+2025-02-28 23:25:41,105 ./spiral_contiformer/log INFO Saved visualization figure at ./spiral_contiformer/vis_5.png
+2025-02-28 23:25:49,122 ./spiral_contiformer/log INFO Iter: 6, running loss: 8098.6046
+2025-02-28 23:25:49,130 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:26:02,869 ./spiral_contiformer/log INFO Iter: 6, MAE: 0.4130, RMSE: 0.3554
+2025-02-28 23:26:02,875 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:26:10,909 ./spiral_contiformer/log INFO Iter: 7, running loss: 8029.7440
+2025-02-28 23:26:10,917 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:26:24,720 ./spiral_contiformer/log INFO Iter: 7, MAE: 0.4020, RMSE: 0.3640
+2025-02-28 23:26:24,726 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:26:32,765 ./spiral_contiformer/log INFO Iter: 8, running loss: 7962.1695
+2025-02-28 23:26:32,773 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:26:46,524 ./spiral_contiformer/log INFO Iter: 8, MAE: 0.3971, RMSE: 0.3723
+2025-02-28 23:26:46,530 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:26:54,676 ./spiral_contiformer/log INFO Iter: 9, running loss: 7895.5664
+2025-02-28 23:26:54,684 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:27:08,448 ./spiral_contiformer/log INFO Iter: 9, MAE: 0.3772, RMSE: 0.3484
+2025-02-28 23:27:08,454 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:27:16,444 ./spiral_contiformer/log INFO Iter: 10, running loss: 7828.2654
+2025-02-28 23:27:16,452 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:27:30,183 ./spiral_contiformer/log INFO Iter: 10, MAE: 0.3675, RMSE: 0.3280
+2025-02-28 23:27:30,188 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:27:30,539 ./spiral_contiformer/log INFO Saved visualization figure at ./spiral_contiformer/vis_10.png
+2025-02-28 23:27:38,545 ./spiral_contiformer/log INFO Iter: 11, running loss: 7760.3071
+2025-02-28 23:27:38,553 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:27:52,303 ./spiral_contiformer/log INFO Iter: 11, MAE: 0.3845, RMSE: 0.3393
+2025-02-28 23:28:00,326 ./spiral_contiformer/log INFO Iter: 12, running loss: 7693.7475
+2025-02-28 23:28:00,334 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:28:14,088 ./spiral_contiformer/log INFO Iter: 12, MAE: 0.3932, RMSE: 0.3533
+2025-02-28 23:28:22,191 ./spiral_contiformer/log INFO Iter: 13, running loss: 7628.7886
+2025-02-28 23:28:22,200 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:28:35,884 ./spiral_contiformer/log INFO Iter: 13, MAE: 0.3705, RMSE: 0.3418
+2025-02-28 23:28:43,901 ./spiral_contiformer/log INFO Iter: 14, running loss: 7563.7134
+2025-02-28 23:28:43,909 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:28:57,642 ./spiral_contiformer/log INFO Iter: 14, MAE: 0.3297, RMSE: 0.3217
+2025-02-28 23:28:57,648 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:29:05,682 ./spiral_contiformer/log INFO Iter: 15, running loss: 7498.0558
+2025-02-28 23:29:05,691 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:29:19,410 ./spiral_contiformer/log INFO Iter: 15, MAE: 0.3121, RMSE: 0.3200
+2025-02-28 23:29:19,416 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:29:19,772 ./spiral_contiformer/log INFO Saved visualization figure at ./spiral_contiformer/vis_15.png
+2025-02-28 23:29:27,790 ./spiral_contiformer/log INFO Iter: 16, running loss: 7432.9033
+2025-02-28 23:29:27,799 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:29:41,535 ./spiral_contiformer/log INFO Iter: 16, MAE: 0.3370, RMSE: 0.3307
+2025-02-28 23:29:49,645 ./spiral_contiformer/log INFO Iter: 17, running loss: 7369.0745
+2025-02-28 23:29:49,654 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:30:03,392 ./spiral_contiformer/log INFO Iter: 17, MAE: 0.3384, RMSE: 0.3314
+2025-02-28 23:30:11,436 ./spiral_contiformer/log INFO Iter: 18, running loss: 7305.8549
+2025-02-28 23:30:11,445 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:30:39,109 ./spiral_contiformer/log INFO Loaded ckpt from ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:30:54,242 ./spiral_contiformer/log INFO Iter: 19, running loss: 1951.5729
+2025-02-28 23:30:54,250 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:30:57,697 ./spiral_contiformer/log INFO Iter: 19, MAE: 0.3065, RMSE: 0.3048
+2025-02-28 23:30:57,703 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:31:13,011 ./spiral_contiformer/log INFO Iter: 20, running loss: 1949.8940
+2025-02-28 23:31:13,022 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:31:16,444 ./spiral_contiformer/log INFO Iter: 20, MAE: 0.3328, RMSE: 0.3120
+2025-02-28 23:31:16,849 ./spiral_contiformer/log INFO Saved visualization figure at ./spiral_contiformer/vis_20.png
+2025-02-28 23:31:32,013 ./spiral_contiformer/log INFO Iter: 21, running loss: 1948.3043
+2025-02-28 23:31:32,027 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:31:35,466 ./spiral_contiformer/log INFO Iter: 21, MAE: 0.3223, RMSE: 0.3077
+2025-02-28 23:31:50,801 ./spiral_contiformer/log INFO Iter: 22, running loss: 1946.9943
+2025-02-28 23:31:50,813 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:31:54,248 ./spiral_contiformer/log INFO Iter: 22, MAE: 0.3141, RMSE: 0.3062
+2025-02-28 23:32:09,478 ./spiral_contiformer/log INFO Iter: 23, running loss: 1945.4550
+2025-02-28 23:32:09,491 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:32:12,935 ./spiral_contiformer/log INFO Iter: 23, MAE: 0.2967, RMSE: 0.3021
+2025-02-28 23:32:12,942 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:32:28,217 ./spiral_contiformer/log INFO Iter: 24, running loss: 1943.4798
+2025-02-28 23:32:28,231 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:32:31,662 ./spiral_contiformer/log INFO Iter: 24, MAE: 0.3106, RMSE: 0.3031
+2025-02-28 23:32:47,091 ./spiral_contiformer/log INFO Iter: 25, running loss: 1941.6876
+2025-02-28 23:32:47,105 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:32:50,556 ./spiral_contiformer/log INFO Iter: 25, MAE: 0.3117, RMSE: 0.3015
+2025-02-28 23:32:50,913 ./spiral_contiformer/log INFO Saved visualization figure at ./spiral_contiformer/vis_25.png
+2025-02-28 23:33:18,900 ./spiral_contiformer/log INFO Loaded ckpt from ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:35:02,368 ./spiral_contiformer/log INFO Loaded ckpt from ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:35:16,829 ./spiral_contiformer/log INFO Iter: 26, running loss: 1743.2794
+2025-02-28 23:35:16,836 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:35:19,801 ./spiral_contiformer/log INFO Iter: 26, MAE: 0.3100, RMSE: 0.2984
+2025-02-28 23:35:19,807 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:35:35,111 ./spiral_contiformer/log INFO Iter: 27, running loss: 1742.9370
+2025-02-28 23:35:35,122 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:35:38,073 ./spiral_contiformer/log INFO Iter: 27, MAE: 0.3160, RMSE: 0.3017
+2025-02-28 23:35:52,812 ./spiral_contiformer/log INFO Iter: 28, running loss: 1742.8635
+2025-02-28 23:35:52,826 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:35:55,764 ./spiral_contiformer/log INFO Iter: 28, MAE: 0.3138, RMSE: 0.3007
+2025-02-28 23:36:10,007 ./spiral_contiformer/log INFO Iter: 29, running loss: 1742.7940
+2025-02-28 23:36:10,020 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:36:12,969 ./spiral_contiformer/log INFO Iter: 29, MAE: 0.2951, RMSE: 0.2944
+2025-02-28 23:36:12,975 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:36:27,790 ./spiral_contiformer/log INFO Iter: 30, running loss: 1741.9061
+2025-02-28 23:36:27,804 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:36:30,748 ./spiral_contiformer/log INFO Iter: 30, MAE: 0.2949, RMSE: 0.2924
+2025-02-28 23:36:30,754 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:36:31,101 ./spiral_contiformer/log INFO Saved visualization figure at ./spiral_contiformer/vis_30.png
+2025-02-28 23:36:46,102 ./spiral_contiformer/log INFO Iter: 31, running loss: 1740.8324
+2025-02-28 23:36:46,115 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:36:49,063 ./spiral_contiformer/log INFO Iter: 31, MAE: 0.2989, RMSE: 0.2941
+2025-02-28 23:37:04,108 ./spiral_contiformer/log INFO Iter: 32, running loss: 1739.9757
+2025-02-28 23:37:04,127 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:37:07,084 ./spiral_contiformer/log INFO Iter: 32, MAE: 0.2927, RMSE: 0.2906
+2025-02-28 23:37:07,090 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:37:21,897 ./spiral_contiformer/log INFO Iter: 33, running loss: 1738.7245
+2025-02-28 23:37:21,910 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:37:24,864 ./spiral_contiformer/log INFO Iter: 33, MAE: 0.2868, RMSE: 0.2873
+2025-02-28 23:37:24,870 ./spiral_contiformer/log INFO Stored best ckpt at ./spiral_contiformer/ckpt_Contiformer_best.pth
+2025-02-28 23:37:40,101 ./spiral_contiformer/log INFO Iter: 34, running loss: 1737.2845
+2025-02-28 23:37:40,114 ./spiral_contiformer/log INFO Stored ckpt at ./spiral_contiformer/ckpt_Contiformer.pth
+2025-02-28 23:37:43,074 ./spiral_contiformer/log INFO Iter: 34, MAE: 0.2893, RMSE: 0.2877

@@ -141,7 +141,7 @@ class TransformerLatentODEWrapper(nn.Module):
         if use_torchode:
             term = to.ODETerm(self.func)
             step_method = to.Dopri5(term=term)
-            step_size_controller = to.IntegralController(atol=1e-5, rtol=1e-3, term=term)
+            step_size_controller = to.IntegralController(atol=1e-1, rtol=1e-1, term=term)
             self.adjoint = to.AutoDiffAdjoint(step_method, step_size_controller)
         self.use_torchode = use_torchode
         # Decoder to map latent state to observation space
@@ -211,6 +211,7 @@ class TransformerLatentODEWrapper(nn.Module):
         x = x.transpose(0, 1)  # (T_obs, B, d_model)
         encoded = self.transformer_encoder(x)  # (T_obs, B, d_model)
         h = encoded[-1]  # (B, d_model)
+        #h = encoded.mean(dim=0)
         z_params = self.initial_state_projection(h)  # (B, 2 * latent_dim)
         if self.variational_inference:
             qz0_mean, qz0_logvar = z_params.chunk(2, dim=-1)
@@ -232,7 +233,7 @@ class TransformerLatentODEWrapper(nn.Module):
                 pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (B, unique_length, latent_dim)
                 
             else:
-                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-3, atol=1e-5)  # (unique_length, B, latent_dim)
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-1, atol=1e-1)  # (unique_length, B, latent_dim)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
@@ -309,7 +310,7 @@ class TransformerLatentODEWrapper(nn.Module):
                 sol = self.adjoint.solve(problem)
                 pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (B, unique_length, latent_dim)
             else:
-                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-3, atol=1e-5)
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-1, atol=1e-1)  # (unique_length, B, latent_dim)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
@@ -321,6 +322,55 @@ class TransformerLatentODEWrapper(nn.Module):
         pred_x = self.decoder(pred_z)
         return pred_x
     
+    def reconstruct(self, obs_traj, obs_time):
+        """
+        Reconstructs the trajectory for the input time.
+        Args:
+            obs_traj: (B, obs_length, obs_dim)
+            obs_time: 1D tensor of length obs_length    
+        Returns:
+            pred_x: (B, obs_length, obs_dim)
+        """
+        B, _, _ = obs_traj.size()
+        x = self.value_embedding(obs_traj)
+        pos_emb = self.positional_embedding(obs_traj.shape, past_key_values_length=0)
+        pos_emb = pos_emb.unsqueeze(0).expand(B, -1, -1)
+        x = x + pos_emb
+        x = x.transpose(0, 1)
+        encoded = self.transformer_encoder(x)
+        h = encoded[-1]
+        if self.variational_inference:
+            z_params = self.initial_state_projection(h)
+            qz0_mean, _ = z_params.chunk(2, dim=-1)
+            z0 = qz0_mean  # use mean for deterministic prediction
+        else:
+            z0 = self.initial_state_projection(h)
+        
+        # Filter unique times and get mapping
+        full_time = obs_time
+        unique_times, mapping_indices = self._filter_unique_times(full_time)
+        
+        # ODE integration with unique times
+        if USE_ADAPTIVE:
+            if self.use_torchode:
+                # expand unique_times to match the shape of z0
+                problem = to.InitialValueProblem(y0=z0, t_eval=unique_times.unsqueeze(0).expand(B, -1))
+                sol = self.adjoint.solve(problem)
+                pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (B, unique_length, latent_dim)
+            else:
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-1, atol=1e-1)  # (unique_length, B, latent_dim)
+        else:
+            time_span = unique_times[-1] - unique_times[0]
+            step_size = time_span / 20
+            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', options=dict(step_size=step_size))
+        
+        # Reconstruct full trajectory with duplicates
+        pred_z = self._reconstruct_trajectory(pred_z_unique, mapping_indices, len(full_time))
+        pred_z = pred_z.permute(1, 0, 2)
+        pred_x = self.decoder(pred_z)
+        return pred_x
+        
+
     def transformer_only_reconstruction(self, obs_traj):
         """
         Uses only the transformer encoder-decoder to produce latent from the first frame and compute reconstruction loss
