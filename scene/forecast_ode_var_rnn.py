@@ -22,19 +22,19 @@ def normal_kl(mu1, lv1, mu2, lv2):
 # ODE Function
 # --------------------------
 class ODEFunc(nn.Module):
-    def __init__(self, latent_dim=4, nhidden=20, num_layers=2):
+    def __init__(self, latent_dim=4, nhidden=20, num_layers=2, use_tanh=False):
         super(ODEFunc, self).__init__()
-        self.relu = nn.ReLU(inplace=True)
+        self.activation = nn.Tanh() if use_tanh else nn.ReLU(inplace=True)
         self.fc1 = nn.Linear(latent_dim, nhidden)
         self.middle_layers = nn.ModuleList([nn.Linear(nhidden, nhidden) for _ in range(num_layers - 2)])
         self.fc_final = nn.Linear(nhidden, latent_dim)
 
     def forward(self, t, x):
         out = self.fc1(x)
-        out = self.relu(out)
+        out = self.activation(out)
         for layer in self.middle_layers:
             out = layer(out)
-            out = self.relu(out)
+            out = self.activation(out)
         out = self.fc_final(out)
         return out
 
@@ -53,7 +53,7 @@ class GRUCell(nn.Module):
 # ODE-RNN Encoder for Latent ODE
 # --------------------------
 class ODERNNEncoder(nn.Module):
-    def __init__(self, latent_dim, rec_dim, obs_dim, variational_inference):
+    def __init__(self, latent_dim, rec_dim, obs_dim, variational_inference, rtol=1e-1, atol=1e-1):
         super(ODERNNEncoder, self).__init__()
         self.rec_dim = rec_dim
         self.latent_dim = latent_dim
@@ -67,7 +67,8 @@ class ODERNNEncoder(nn.Module):
         
         # ODE function for evolving hidden state
         self.ode_func = ODEFunc(rec_dim, rec_dim*2, num_layers=2)
-        
+        self.rtol = rtol
+        self.atol = atol
         # Projection to latent space
         if variational_inference:
             self.latent_projection = nn.Linear(rec_dim, 2 * latent_dim)  # For mean and logvar
@@ -80,11 +81,11 @@ class ODERNNEncoder(nn.Module):
             return h0.unsqueeze(0)
             
         if USE_ADAPTIVE:
-            return odeint(self.ode_func, h0, time_points, rtol=1e-1, atol=1e-1)
+            return odeint(self.ode_func, h0, time_points, rtol=self.rtol, atol=self.atol)
         else:
             time_span = time_points[-1] - time_points[0]
             step_size = time_span / 20
-            return odeint(self.ode_func, h0, time_points, method='rk4', options=dict(step_size=step_size))
+            return odeint(self.ode_func, h0, time_points, method='rk4', rtol=self.rtol, atol=self.atol, options=dict(step_size=step_size))
             
     def forward(self, obs_traj, time_points):
         """
@@ -132,7 +133,7 @@ class ODERNNEncoder(nn.Module):
 class LatentODERNN(nn.Module):
     def __init__(self, latent_dim, rec_dim, num_decoder_layers,
                  ode_nhidden, decoder_nhidden, obs_dim, noise_std, ode_layers, 
-                 reg_weight, variational_inference, use_torchode):
+                 reg_weight, variational_inference, use_torchode, rtol=1e-1, atol=1e-1, use_tanh=False):
         super(LatentODERNN, self).__init__()
         print("Initializing Latent ODE with ODE-RNN Encoder")
         print("latent_dim:", latent_dim)
@@ -152,26 +153,34 @@ class LatentODERNN(nn.Module):
         self.noise_std = noise_std
         
         # ODE-RNN Encoder
-        self.encoder = ODERNNEncoder(latent_dim, rec_dim, obs_dim, variational_inference)
+        self.encoder = ODERNNEncoder(latent_dim, rec_dim, obs_dim, variational_inference, rtol, atol, use_tanh)
         
         # ODE function for latent dynamics
-        self.func = ODEFunc(latent_dim, ode_nhidden, num_layers=ode_layers)
+        self.func = ODEFunc(latent_dim, ode_nhidden, num_layers=ode_layers, use_tanh=use_tanh)
         
         # Setup ODE solver
         if use_torchode:
             term = to.ODETerm(self.func)
             step_method = to.Dopri5(term=term)
-            step_size_controller = to.IntegralController(atol=1e-1, rtol=1e-1, term=term)
+            step_size_controller = to.IntegralController(atol=atol, rtol=rtol, term=term)
             self.adjoint = to.AutoDiffAdjoint(step_method, step_size_controller)
         self.use_torchode = use_torchode
         
         # Decoder to map latent state to observation space
+        self.use_tanh = use_tanh
+        
         decoder_layers = []
         decoder_layers.append(nn.Linear(latent_dim, decoder_nhidden))
-        decoder_layers.append(nn.ReLU())
+        if use_tanh:
+            decoder_layers.append(nn.Tanh())
+        else:
+            decoder_layers.append(nn.ReLU())
         for _ in range(num_decoder_layers - 1):
             decoder_layers.append(nn.Linear(decoder_nhidden, decoder_nhidden))
-            decoder_layers.append(nn.ReLU())
+            if use_tanh:
+                decoder_layers.append(nn.Tanh())
+            else:
+                decoder_layers.append(nn.ReLU())
         decoder_layers.append(nn.Linear(decoder_nhidden, obs_dim))
         self.decoder = nn.Sequential(*decoder_layers)
 
@@ -252,11 +261,11 @@ class LatentODERNN(nn.Module):
                 sol = self.adjoint.solve(problem)
                 pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (unique_length, B, latent_dim)
             else:
-                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-1, atol=1e-1)  # (unique_length, B, latent_dim)
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=self.rtol, atol=self.atol)  # (unique_length, B, latent_dim)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
-            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', options=dict(step_size=step_size))
+            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', rtol=self.rtol, atol=self.atol, options=dict(step_size=step_size))
         
         # Calculate regularization loss if needed
         reg_loss = torch.tensor(0.0, device=device)
@@ -343,11 +352,11 @@ class LatentODERNN(nn.Module):
                 sol = self.adjoint.solve(problem)
                 pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (unique_length, B, latent_dim)
             else:
-                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-1, atol=1e-1)
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=self.rtol, atol=self.atol)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
-            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', options=dict(step_size=step_size))
+            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', rtol=self.rtol, atol=self.atol, options=dict(step_size=step_size))
         
         # Reconstruct full trajectory with duplicate time points
         pred_z = self._reconstruct_trajectory(pred_z_unique, mapping_indices, len(full_time))
@@ -387,11 +396,11 @@ class LatentODERNN(nn.Module):
                 sol = self.adjoint.solve(problem)
                 pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (unique_length, B, latent_dim)
             else:
-                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-1, atol=1e-1)
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=self.rtol, atol=self.atol)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
-            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', options=dict(step_size=step_size))
+            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', rtol=self.rtol, atol=self.atol, options=dict(step_size=step_size))
         
         # Reconstruct full trajectory with duplicate time points
         pred_z = self._reconstruct_trajectory(pred_z_unique, mapping_indices, len(obs_time))

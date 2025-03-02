@@ -48,21 +48,19 @@ class TimeSeriesSinusoidalPositionalEmbedding(nn.Embedding):
 # Latent ODE Function
 # --------------------------
 class LatentODEfunc(nn.Module):
-    def __init__(self, latent_dim=4, nhidden=20, num_layers=2):
+    def __init__(self, latent_dim=4, nhidden=20, num_layers=2, use_tanh=False):
         super(LatentODEfunc, self).__init__()
-        self.relu = nn.ReLU(inplace=True)
+        self.activation = nn.Tanh() if use_tanh else nn.ReLU(inplace=True)
         self.fc1 = nn.Linear(latent_dim, nhidden)
         self.middle_layers = nn.ModuleList([nn.Linear(nhidden, nhidden) for _ in range(num_layers - 2)])
         self.fc_final = nn.Linear(nhidden, latent_dim)
-        #self.nfe = 0
 
     def forward(self, t, x):
-        #self.nfe += 1
         out = self.fc1(x)
-        out = self.relu(out)
+        out = self.activation(out)
         for layer in self.middle_layers:
             out = layer(out)
-            out = self.relu(out)
+            out = self.activation(out)
         out = self.fc_final(out)
         return out
 
@@ -107,7 +105,7 @@ class TrajectoryWindowDataset(Dataset):
 # --------------------------
 class TransformerLatentODEWrapper(nn.Module):
     def __init__(self, latent_dim, d_model, nhead, num_encoder_layers,num_decoder_layers,
-                 ode_nhidden, decoder_nhidden, obs_dim, noise_std, ode_layers, reg_weight, variational_inference, use_torchode):
+                 ode_nhidden, decoder_nhidden, obs_dim, noise_std, ode_layers, reg_weight, variational_inference, use_torchode, rtol=1e-1, atol=1e-1, use_tanh=False):
         super(TransformerLatentODEWrapper, self).__init__()
         print("initialzing TransformerLatentOdeWrapper")
         print("latent_dim: ", latent_dim)
@@ -126,6 +124,7 @@ class TransformerLatentODEWrapper(nn.Module):
         self.obs_dim = obs_dim
         self.reg_weight = reg_weight
         self.variational_inference = variational_inference
+        self.use_tanh = use_tanh
         # Recognition: transformer encoder to encode the observed trajectory
         self.value_embedding = nn.Linear(obs_dim, d_model)
         self.positional_embedding = TimeSeriesSinusoidalPositionalEmbedding(num_positions=500, embedding_dim=d_model)
@@ -137,22 +136,30 @@ class TransformerLatentODEWrapper(nn.Module):
             self.initial_state_projection = nn.Linear(d_model, latent_dim)
         
         # Latent ODE dynamics
-        self.func = LatentODEfunc(latent_dim, ode_nhidden, num_layers=ode_layers)
+        self.func = LatentODEfunc(latent_dim, ode_nhidden, num_layers=ode_layers, use_tanh=use_tanh)
         if use_torchode:
             term = to.ODETerm(self.func)
             step_method = to.Dopri5(term=term)
-            step_size_controller = to.IntegralController(atol=1e-1, rtol=1e-1, term=term)
+            step_size_controller = to.IntegralController(atol=atol, rtol=rtol, term=term)
             self.adjoint = to.AutoDiffAdjoint(step_method, step_size_controller)
         self.use_torchode = use_torchode
         # Decoder to map latent state to observation space
         decoder_layers = []
         decoder_layers.append(nn.Linear(latent_dim, decoder_nhidden))
-        decoder_layers.append(nn.ReLU())
+        if use_tanh:
+            decoder_layers.append(nn.Tanh())
+        else:
+            decoder_layers.append(nn.ReLU())
         for _ in range(num_decoder_layers - 1):
             decoder_layers.append(nn.Linear(decoder_nhidden, decoder_nhidden))
-            decoder_layers.append(nn.ReLU())
+            if use_tanh:
+                decoder_layers.append(nn.Tanh())
+            else:
+                decoder_layers.append(nn.ReLU())
         decoder_layers.append(nn.Linear(decoder_nhidden, obs_dim))
         self.decoder = nn.Sequential(*decoder_layers)
+        self.rtol = rtol
+        self.atol = atol
     def _filter_unique_times(self, times):
         """
         Filter out duplicate timestamps and return unique, strictly increasing times along with mapping indices.
@@ -233,11 +240,11 @@ class TransformerLatentODEWrapper(nn.Module):
                 pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (B, unique_length, latent_dim)
                 
             else:
-                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-1, atol=1e-1)  # (unique_length, B, latent_dim)
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=self.rtol, atol=self.atol)  # (unique_length, B, latent_dim)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
-            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', options=dict(step_size=step_size))  # (unique_length, B, latent_dim)
+            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', rtol=self.rtol, atol=self.atol, options=dict(step_size=step_size))  # (unique_length, B, latent_dim)
         
         reg_loss = torch.tensor(0.0, device=device)
         if self.reg_weight > 0:
@@ -310,11 +317,11 @@ class TransformerLatentODEWrapper(nn.Module):
                 sol = self.adjoint.solve(problem)
                 pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (B, unique_length, latent_dim)
             else:
-                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-1, atol=1e-1)  # (unique_length, B, latent_dim)
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=self.rtol, atol=self.atol)  # (unique_length, B, latent_dim)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
-            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', options=dict(step_size=step_size))
+            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', rtol=self.rtol, atol=self.atol, options=dict(step_size=step_size))
         
         # Reconstruct full trajectory with duplicates
         pred_z = self._reconstruct_trajectory(pred_z_unique, mapping_indices, len(full_time))
@@ -358,11 +365,11 @@ class TransformerLatentODEWrapper(nn.Module):
                 sol = self.adjoint.solve(problem)
                 pred_z_unique = torch.transpose(sol.ys, 0, 1)  # (B, unique_length, latent_dim)
             else:
-                pred_z_unique = odeint(self.func, z0, unique_times, rtol=1e-1, atol=1e-1)  # (unique_length, B, latent_dim)
+                pred_z_unique = odeint(self.func, z0, unique_times, rtol=self.rtol, atol=self.atol)  # (unique_length, B, latent_dim)
         else:
             time_span = unique_times[-1] - unique_times[0]
             step_size = time_span / 20
-            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', options=dict(step_size=step_size))
+            pred_z_unique = odeint(self.func, z0, unique_times, method='rk4', rtol=self.rtol, atol=self.atol, options=dict(step_size=step_size))
         
         # Reconstruct full trajectory with duplicates
         pred_z = self._reconstruct_trajectory(pred_z_unique, mapping_indices, len(full_time))

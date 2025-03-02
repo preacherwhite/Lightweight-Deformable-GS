@@ -45,7 +45,8 @@ def setup_training(dataset, gaussians, train_gaussians, opt,
                       num_encoder_layers, num_decoder_layers, 
                       ode_nhidden, decoder_nhidden, noise_std, 
                       ode_layers, reg_weight,
-                    variational_inference, use_torchode, use_contiformer, use_ode_rnn, use_latent_ode_rnn):
+                    variational_inference, use_torchode, use_contiformer, use_ode_rnn, use_latent_ode_rnn,
+                    rtol, atol, use_tanh):
     """Set up training configurations and optimizers."""
     obs_dim = 3 if dataset.xyz_only else 10
     if use_contiformer:
@@ -53,14 +54,14 @@ def setup_training(dataset, gaussians, train_gaussians, opt,
         transformer_ode = ContiformerLatentODEWrapper(
             latent_dim=latent_dim, d_model=d_model, nhead=nhead, num_encoder_layers=num_encoder_layers,num_decoder_layers=num_decoder_layers,
         ode_nhidden=ode_nhidden, decoder_nhidden=decoder_nhidden, obs_dim=obs_dim, noise_std=noise_std,
-            ode_layers=ode_layers
+            ode_layers=ode_layers, rtol=rtol, atol=atol, use_tanh=use_tanh
         ).cuda()
     elif use_ode_rnn:
         print("Using ODE_RNN_Model")
         transformer_ode = ODE_RNN_Model(
             latent_dim=latent_dim, d_model=d_model, nhead=nhead, num_decoder_layers=num_decoder_layers,
             ode_nhidden=ode_nhidden, decoder_nhidden=decoder_nhidden, obs_dim=obs_dim, ode_layers=ode_layers, 
-            reg_weight=reg_weight, variational_inference=variational_inference, use_torchode=use_torchode
+            reg_weight=reg_weight, variational_inference=variational_inference, use_torchode=use_torchode, rtol=rtol, atol=atol, use_tanh=use_tanh
         ).cuda()
     elif use_latent_ode_rnn:
         print("Using LatentODERNN")
@@ -69,14 +70,14 @@ def setup_training(dataset, gaussians, train_gaussians, opt,
             latent_dim=latent_dim, rec_dim=d_model, num_decoder_layers=num_decoder_layers,
             ode_nhidden=ode_nhidden, decoder_nhidden=decoder_nhidden, obs_dim=obs_dim, 
             noise_std=noise_std, ode_layers=ode_layers, reg_weight=reg_weight,
-            variational_inference=variational_inference, use_torchode=use_torchode
+            variational_inference=variational_inference, use_torchode=use_torchode, rtol=rtol, atol=atol, use_tanh=use_tanh
         ).cuda()
     else:
         print("Using TransformerLatentODEWrapper")
         transformer_ode = TransformerLatentODEWrapper(
             latent_dim=latent_dim, d_model=d_model, nhead=nhead, num_encoder_layers=num_encoder_layers,num_decoder_layers=num_decoder_layers,
             ode_nhidden=ode_nhidden, decoder_nhidden=decoder_nhidden, obs_dim=obs_dim, noise_std=noise_std,
-            ode_layers=ode_layers, reg_weight=reg_weight, variational_inference=variational_inference, use_torchode=use_torchode
+            ode_layers=ode_layers, reg_weight=reg_weight, variational_inference=variational_inference, use_torchode=use_torchode, rtol=rtol, atol=atol, use_tanh=use_tanh
         ).cuda()
     
     if train_gaussians:
@@ -380,7 +381,8 @@ def training(dataset, opt, pipe, num_testing_iterations, num_saving_iterations, 
           xyz_only=False, warmup_iterations=500, continuous_time_sampling=True, 
           ode_only_ratio=0.7, render_weight=1, warmup_weight=1, ode_weight=1e-3, reg_weight=1e-3,
           latent_dim=10, d_model=128, nhead=8, num_encoder_layers=5, num_decoder_layers=5, ode_nhidden=20, decoder_nhidden=128, noise_std=0.1, ode_layers=1, variational_inference=True,
-          log_directory=None, use_torchode=False, use_contiformer=False, use_ode_rnn=False, use_latent_ode_rnn=False):
+          log_directory=None, use_torchode=False, use_contiformer=False, use_ode_rnn=False, use_latent_ode_rnn=False,
+          rtol=1e-1, atol=1e-1, use_tanh=False):
     """
     Main training function for Transformer-ODE model.
     
@@ -426,7 +428,8 @@ def training(dataset, opt, pipe, num_testing_iterations, num_saving_iterations, 
           opt, learning_rate, latent_dim, d_model,
             nhead, num_encoder_layers, num_decoder_layers,
               ode_nhidden, decoder_nhidden, noise_std,
-                ode_layers, reg_weight, variational_inference, use_torchode, use_contiformer, use_ode_rnn, use_latent_ode_rnn
+                ode_layers, reg_weight, variational_inference, use_torchode, use_contiformer, use_ode_rnn, use_latent_ode_rnn,
+                rtol, atol, use_tanh
     )
     print("Setting up optimizers and initializing Transformer-ODE complete")
     total_gaussians = gaussians.get_xyz.shape[0]
@@ -685,6 +688,9 @@ if __name__ == "__main__":
     parser.add_argument('--encoder_nhidden', type=int, default=64, help="Model dimension for encoder")
     parser.add_argument('--decoder_nhidden', type=int, default=64, help="Number of hidden units for decoder for ODE")
 
+    parser.add_argument('--rtol', type=float, default=1e-1, help="Relative tolerance for ODE")
+    parser.add_argument('--atol', type=float, default=1e-1, help="Absolute tolerance for ODE")
+
     parser.add_argument('--noise_std', type=float, default=0.01, help="Noise standard deviation for ODE")
     parser.add_argument('--var_inf', action='store_true', default=False, help="Use variational inference for ODE")
 
@@ -694,6 +700,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_ode_rnn', action='store_true', default=False, help="Use ode_rnn for ODE")
     # Add to the parser arguments at the bottom of run_models.py
     parser.add_argument('--use_latent_ode_rnn', action='store_true', default=False, help="Use Latent ODE with ODE-RNN encoder")
+    parser.add_argument('--use_tanh', action='store_true', default=False, help="Use tanh for network activation")
     args = parser.parse_args(sys.argv[1:])
     if args.custom_iterations is not None:
         args.save_iterations.append(args.custom_iterations)
@@ -721,5 +728,6 @@ if __name__ == "__main__":
         args.render_weight, args.warmup_weight, args.ode_weight, args.reg_weight,
         args.latent_dim, args.encoder_nhidden, args.nhead, args.num_encoder_layers,
         args.num_decoder_layers, args.ode_nhidden, args.decoder_nhidden, args.noise_std, args.ode_layers, args.var_inf,
-        args.log_directory, args.use_torchode, args.use_contiformer, args.use_ode_rnn, args.use_latent_ode_rnn
+        args.log_directory, args.use_torchode, args.use_contiformer, args.use_ode_rnn, args.use_latent_ode_rnn,
+        args.rtol, args.atol, args.use_tanh
     )
