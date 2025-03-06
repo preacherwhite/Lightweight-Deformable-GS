@@ -109,3 +109,41 @@ class Scene:
 
     def getTestCameras(self, scale=1.0):
         return self.test_cameras[scale]
+    def apply_time_split(self, split_ratio=0.8):
+        """
+        Split cameras into training and validation sets based on time index (fid).
+        
+        Args:
+            split_ratio: Float between 0 and 1 indicating the ratio of frames to use for training
+                        (default: 0.8 means 80% for training, 20% for validation)
+        
+        Returns:
+            train_cameras: List of cameras for training
+            test_cameras: List of cameras for validation
+        """
+        # Get all cameras from both train and test sets (for the default resolution scale)
+        all_cameras = []
+        for cam in self.getTrainCameras():
+            all_cameras.append(cam)
+        for cam in self.getTestCameras():
+            all_cameras.append(cam)
+        
+        # Sort by frame ID (time index)
+        all_cameras.sort(key=lambda x: x.fid)
+        
+        # Calculate split index based on time
+        total_frames = len(all_cameras)
+        split_idx = int(total_frames * split_ratio)
+        
+        # Create new train and test camera lists
+        train_cameras = all_cameras[:split_idx]
+        test_cameras = all_cameras[split_idx:]
+        
+        # Update the camera dictionaries for all resolution scales
+        for scale in self.train_cameras.keys():
+            self.train_cameras[scale] = train_cameras
+            self.test_cameras[scale] = test_cameras
+        
+        print(f"Time-based split: {len(train_cameras)} training frames, {len(test_cameras)} validation frames")
+        
+        return train_cameras, test_cameras

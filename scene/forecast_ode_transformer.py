@@ -272,9 +272,9 @@ class TransformerLatentODEWrapper(nn.Module):
                                 torch.zeros_like(qz0_logvar)).sum(dim=1).mean()
             loss = recon_loss + pred_loss + kl_loss + reg_loss
         else:
-            # deterministic prediction, use mse loss
-            recon_loss = F.mse_loss(pred_x_target, target_traj)
-            pred_loss = F.mse_loss(pred_x_obs, obs_traj)
+            # deterministic prediction, use l1 loss
+            recon_loss = F.l1_loss(pred_x_target, target_traj)
+            pred_loss = F.l1_loss(pred_x_obs, obs_traj)
             loss = recon_loss + pred_loss + reg_loss
             kl_loss = 0
         return loss, recon_loss, pred_loss, kl_loss, reg_loss, pred_x
@@ -421,7 +421,7 @@ class TransformerLatentODEWrapper(nn.Module):
                                torch.zeros_like(qz0_mean),
                                torch.zeros_like(qz0_logvar)).sum(dim=1).mean()
         else:
-            recon_loss = F.mse_loss(pred_x_first, obs_traj[:, 0, :])
+            recon_loss = F.l1_loss(pred_x_first, obs_traj[:, 0, :])
             kl_loss = 0
         
         total_loss = recon_loss + kl_loss

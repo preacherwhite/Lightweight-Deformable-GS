@@ -1,9 +1,10 @@
 import torch
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render_ode
+
 def _compute_rendering_loss(viewpoint_cam, pred_values, batch_indices, trajectories_or_traj_gt, 
                            frame_idx, gaussians, pipe, background, xyz_only, dataset, opt, 
-                           render_weight, deform=None, fid_val=None, total_gaussians=None):
+                           render_weight, deform=None, fid_val=None, total_gaussians=None, scales = None):
     """Common helper for computing rendering loss for a single frame."""
     # Handle parameter updates based on prediction type
     if xyz_only:
@@ -43,24 +44,52 @@ def _compute_rendering_loss(viewpoint_cam, pred_values, batch_indices, trajector
             new_rotation_render[batch_indices] = pred_values[:, 3:7]
             new_scaling_render[batch_indices] = pred_values[:, 7:]
     
-    # Render and compute loss
-    render_pkg = render_ode(
-        viewpoint_cam, gaussians, pipe, background,
-        new_xyz_render, new_rotation_render, new_scaling_render,
-        dataset.is_6dof
-    )
-    
-    image = render_pkg["render"]
-    gt_image = viewpoint_cam.original_image.cuda()
-    l1 = l1_loss(image, gt_image)
-    rendering_loss = (1.0 - opt.lambda_dssim) * l1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-    scaled_loss = rendering_loss * render_weight
-    
-    return scaled_loss, render_pkg
+    if scales is None:
+        render_pkg = render_ode(
+            viewpoint_cam, gaussians, pipe, background,
+            new_xyz_render, new_rotation_render, new_scaling_render,
+            dataset.is_6dof
+        )
+        
+        image = render_pkg["render"]
+        gt_image = viewpoint_cam.original_image.cuda()
+        l1 = l1_loss(image, gt_image)
+        rendering_loss = (1.0 - opt.lambda_dssim) * l1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        scaled_loss = rendering_loss * render_weight
+        
+        return scaled_loss, render_pkg
+    else:
+        if len(scales) == 1 and scales[0] < 0   :
+            scales = []
+            image_height = viewpoint_cam.image_height
+            image_width = viewpoint_cam.image_width
+            # compute times it takes to half the image size each time until 1x1
+            scale = 1.0
+            while image_height > 2 and image_width > 2:
+                scale /= 2
+                scales.append(scale)
+                image_height /= 2
+                image_width /= 2
+        scaled_losses = []
+        for i in range(len(scales)):
+            scale = scales[i]
+            render_pkg = render_ode(
+                viewpoint_cam, gaussians, pipe, background,
+                new_xyz_render, new_rotation_render, new_scaling_render,
+                dataset.is_6dof, resize_factor=scale
+            )
+            image = render_pkg["render"]
+            gt_image = viewpoint_cam.original_image.cuda()
+            l1 = l1_loss(image, gt_image)
+            rendering_loss = (1.0 - opt.lambda_dssim) * l1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            scaled_loss = rendering_loss * render_weight
+            scaled_losses.append(scaled_loss)
+        total_loss = torch.stack(scaled_losses).mean()
+        return total_loss, render_pkg
 
 def compute_warmup_losses(loss, pred_traj_first, warmup_weight, render_weight, opt, 
                          train_cameras, viewpoint_indices, batch_indices, trajectories, 
-                         gaussians, pipe, background, xyz_only, dataset):
+                         gaussians, pipe, background, xyz_only, dataset, scales = None):
     """Compute losses during warmup phase."""
     # Transformer-only reconstruction
     warmup_loss = loss * warmup_weight
@@ -72,7 +101,7 @@ def compute_warmup_losses(loss, pred_traj_first, warmup_weight, render_weight, o
     
     scaled_render_loss, render_pkg_k = _compute_rendering_loss(
         viewpoint_cam_k, pred_traj_first, batch_indices, trajectories,
-        render_frame_idx, gaussians, pipe, background, xyz_only, dataset, opt, render_weight
+        render_frame_idx, gaussians, pipe, background, xyz_only, dataset, opt, render_weight, scales=scales
     )
     
     total_loss = warmup_loss + scaled_render_loss
@@ -83,7 +112,7 @@ def compute_warmup_losses(loss, pred_traj_first, warmup_weight, render_weight, o
 def compute_continuous_warmup_losses(loss,pred_traj_first, warmup_weight, render_weight, opt,
                                     train_cameras, fids, selected_fids, selected_cam_indices,
                                     batch_indices, traj_gt, gaussians, pipe, background, xyz_only,
-                                    dataset, deform):
+                                    dataset, deform, scales = None):
     """Compute losses during warmup phase for continuous sampling."""
     # Sample observation trajectory to use the batch indices
     warmup_loss = loss * warmup_weight
@@ -108,7 +137,7 @@ def compute_continuous_warmup_losses(loss,pred_traj_first, warmup_weight, render
         scaled_render_loss, render_pkg_k = _compute_rendering_loss(
             viewpoint_cam_k, pred_traj_first, batch_indices, traj_gt,
             render_frame_idx, gaussians, pipe, background, xyz_only, dataset, opt, render_weight,
-            deform, fid_val, total_gaussians
+            deform, fid_val, total_gaussians, scales=scales
         )
         total_loss = warmup_loss + scaled_render_loss
         render_pkgs = [render_pkg_k]
@@ -121,7 +150,7 @@ def compute_continuous_warmup_losses(loss,pred_traj_first, warmup_weight, render
 
 def compute_normal_losses(loss, pred_traj, ode_weight, render_weight, opt,
                          train_cameras, viewpoint_indices, batch_indices, trajectories, gaussians, pipe,
-                         background, xyz_only, dataset, render_interval, window_length):
+                         background, xyz_only, dataset, render_interval, window_length, scales = None):
     """Compute losses during normal training phase."""
     pred_traj = pred_traj.permute(1, 0, 2)
     
@@ -139,7 +168,7 @@ def compute_normal_losses(loss, pred_traj, ode_weight, render_weight, opt,
         
         scaled_render_loss, render_pkg_k = _compute_rendering_loss(
             viewpoint_cam_k, pred_at_k, batch_indices, trajectories,
-            render_frame_idx, gaussians, pipe, background, xyz_only, dataset, opt, 1.0  # Use 1.0 as we average later
+            render_frame_idx, gaussians, pipe, background, xyz_only, dataset, opt, 1.0, scales=scales  # Use 1.0 as we average later
         )
         
         render_pkgs.append(render_pkg_k)
@@ -155,7 +184,7 @@ def compute_normal_losses(loss, pred_traj, ode_weight, render_weight, opt,
 def compute_continuous_normal_losses(loss, pred_traj, fids, 
                                     selected_fids, selected_cam_indices, train_cameras, batch_indices, 
                                     traj_gt, total_gaussians, gaussians, deform, pipe, background, 
-                                    xyz_only, dataset, ode_weight, render_weight, opt):
+                                    xyz_only, dataset, ode_weight, render_weight, opt, scales = None):
     """Compute losses during normal training phase for continuous sampling."""
     # Process observation trajectory
     pred_traj = pred_traj.permute(1, 0, 2)
@@ -177,7 +206,7 @@ def compute_continuous_normal_losses(loss, pred_traj, fids,
             scaled_render_loss, render_pkg_k = _compute_rendering_loss(
                 viewpoint_cam_k, pred_at_k, batch_indices, traj_gt,
                 render_idx, gaussians, pipe, background, xyz_only, dataset, opt, 1.0,  # Use 1.0 as we average later
-                deform, fid_val, total_gaussians
+                deform, fid_val, total_gaussians, scales=scales
             )
             
             render_pkgs.append(render_pkg_k)

@@ -30,14 +30,41 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, xyz_only):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, xyz_only, time_split=None):
+    """
+    Main training function with support for time-based dataset splitting.
+    
+    Args:
+        dataset: Dataset containing scene information
+        opt: Optimization parameters
+        pipe: Pipeline parameters
+        testing_iterations: List of iterations at which to test
+        saving_iterations: List of iterations at which to save the model
+        xyz_only: Whether to use only XYZ deformation (no rotation/scaling)
+        time_split: If not None, float between 0-1 indicating time-based train/val split ratio
+    """
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     deform = DeformModel(dataset.is_blender, dataset.is_6dof)
     deform.train_setting(opt)
 
     scene = Scene(dataset, gaussians)
+    # Apply time-based split if specified
+    if time_split is not None:
+        if time_split <= 0 or time_split >= 1:
+            print(f"Warning: time_split value {time_split} is outside valid range (0,1), using default split")
+        else:
+            # Store original camera splits for logging
+            original_train_count = len(scene.getTrainCameras())
+            original_test_count = len(scene.getTestCameras())
+            
+            # Apply time-based split
+            train_cameras, test_cameras = scene.apply_time_split(time_split)
+            
+            print(f"Applied time-based split instead of predefined train/test split")
+            print(f"Original split: {original_train_count} train, {original_test_count} test")
+            print(f"New time-based split: {len(train_cameras)} train, {len(test_cameras)} test")
+    
     gaussians.training_setup(opt)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
@@ -204,10 +231,22 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras': scene.getTestCameras()},
-                              {'name': 'train',
-                               'cameras': [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in
-                                           range(5, 30, 5)]})
+        
+        # Check if we have test cameras
+        test_cameras = scene.getTestCameras()
+        train_cameras = scene.getTrainCameras()
+        
+        # Prepare validation configurations
+        validation_configs = []
+        
+        # Add test set if available
+        if test_cameras and len(test_cameras) > 0:
+            validation_configs.append({'name': 'test', 'cameras': test_cameras})
+        
+        # Add sample from training set
+        if train_cameras and len(train_cameras) > 0:
+            train_samples = [train_cameras[idx % len(train_cameras)] for idx in range(5, min(30, len(train_cameras)), 5)]
+            validation_configs.append({'name': 'train', 'cameras': train_samples})
 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
@@ -238,8 +277,11 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
                 l1_test = l1_loss(images, gts)
                 psnr_test = psnr(images, gts).mean()
-                if config['name'] == 'test' or len(validation_configs[0]['cameras']) == 0:
+                
+                # Use first validation config for test_psnr (whether it's original test or time-split validation)
+                if config == validation_configs[0]:
                     test_psnr = psnr_test
+                    
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
@@ -267,6 +309,8 @@ if __name__ == "__main__":
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 10_000, 20_000, 30_000, 40000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--xyz_only", action="store_true")
+    parser.add_argument("--time_split", type=float, default=None, 
+                       help="If provided, split train/val by time index using this ratio (0-1)")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
@@ -278,7 +322,8 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.xyz_only)
+    training(lp.extract(args), op.extract(args), pp.extract(args), 
+            args.test_iterations, args.save_iterations, args.xyz_only, args.time_split)
 
     # All done
-    print("\nTraining complete.")
+    print("\nTraining complete.")   

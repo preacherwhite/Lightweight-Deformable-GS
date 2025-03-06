@@ -53,7 +53,7 @@ class GRUCell(nn.Module):
 # ODE-RNN Encoder for Latent ODE
 # --------------------------
 class ODERNNEncoder(nn.Module):
-    def __init__(self, latent_dim, rec_dim, obs_dim, variational_inference, rtol=1e-1, atol=1e-1):
+    def __init__(self, latent_dim, rec_dim, obs_dim, variational_inference, rtol=1e-1, atol=1e-1, use_tanh=False):
         super(ODERNNEncoder, self).__init__()
         self.rec_dim = rec_dim
         self.latent_dim = latent_dim
@@ -66,7 +66,7 @@ class ODERNNEncoder(nn.Module):
         self.gru_cell = GRUCell(rec_dim, rec_dim)
         
         # ODE function for evolving hidden state
-        self.ode_func = ODEFunc(rec_dim, rec_dim*2, num_layers=2)
+        self.ode_func = ODEFunc(rec_dim, rec_dim*2, num_layers=2, use_tanh=use_tanh )
         self.rtol = rtol
         self.atol = atol
         # Projection to latent space
@@ -151,7 +151,9 @@ class LatentODERNN(nn.Module):
         self.reg_weight = reg_weight
         self.variational_inference = variational_inference
         self.noise_std = noise_std
-        
+        self.rtol = rtol
+        self.atol = atol
+        self.use_tanh = use_tanh
         # ODE-RNN Encoder
         self.encoder = ODERNNEncoder(latent_dim, rec_dim, obs_dim, variational_inference, rtol, atol, use_tanh)
         

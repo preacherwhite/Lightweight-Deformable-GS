@@ -128,7 +128,7 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
 
 
 def render_ode(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, new_xyz, new_rotation, new_scaling, is_6dof=False,
-           scaling_modifier=1.0, override_color=None):
+           scaling_modifier=1.0, override_color=None, resize_factor=1.0):
     """
     Render the scene. 
     
@@ -149,8 +149,8 @@ def render_ode(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
     raster_settings = GaussianRasterizationSettings(
-        image_height=int(viewpoint_camera.image_height),
-        image_width=int(viewpoint_camera.image_width),
+        image_height=int(viewpoint_camera.image_height * resize_factor),
+        image_width=int(viewpoint_camera.image_width * resize_factor),
         tanfovx=tanfovx,
         tanfovy=tanfovy,
         bg=bg_color,
@@ -216,6 +216,9 @@ def render_ode(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor
         rotations=rotations,
         cov3D_precomp=cov3D_precomp)
 
+    # resize the rendered image to the original image size
+    if resize_factor != 1.0:
+        rendered_image = torch.nn.functional.interpolate(rendered_image.unsqueeze(0), size=(viewpoint_camera.image_height, viewpoint_camera.image_width), mode='bilinear', align_corners=False).squeeze()
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     return {"render": rendered_image,

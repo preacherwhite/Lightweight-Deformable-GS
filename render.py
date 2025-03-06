@@ -302,8 +302,40 @@ def interpolate_view_original(model_path, load2gpt_on_the_fly, is_6dof, name, it
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=60, quality=8)
 
 
+def get_time_split_cameras(scene, time_split_ratio, val_split=False):
+    """
+    Get cameras based on time-based split.
+    
+    Args:
+        scene: Scene object
+        time_split_ratio: Ratio for time-based split (0-1)
+        val_split: If True, return validation (test) cameras, otherwise return training cameras
+    
+    Returns:
+        List of cameras for specified split
+    """
+    # Get all cameras and sort by time index
+    all_cameras = []
+    for cam in scene.getTrainCameras():
+        all_cameras.append(cam)
+    for cam in scene.getTestCameras():
+        all_cameras.append(cam)
+    
+    all_cameras.sort(key=lambda x: x.fid)
+    
+    # Calculate split index based on time
+    total_frames = len(all_cameras)
+    split_idx = int(total_frames * time_split_ratio)
+    
+    # Return appropriate split
+    if val_split:
+        return all_cameras[split_idx:]  # Validation/test set
+    else:
+        return all_cameras[:split_idx]  # Training set
+
+
 def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, skip_train: bool, skip_test: bool,
-                mode: str):
+                mode: str, time_split=None):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
@@ -326,6 +358,35 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
         else:
             render_func = interpolate_all
 
+        # Use time-based split if specified
+        if time_split is not None:
+            if time_split <= 0 or time_split >= 1:
+                print(f"Warning: time_split value {time_split} is outside valid range (0,1), using default split")
+            else:
+                # Get original camera counts for logging
+                original_train_count = len(scene.getTrainCameras())
+                original_test_count = len(scene.getTestCameras())
+                
+                # Get time-split cameras
+                train_cameras = get_time_split_cameras(scene, time_split, False)
+                test_cameras = get_time_split_cameras(scene, time_split, True)
+                
+                print(f"Applied time-based split instead of predefined train/test split")
+                print(f"Original split: {original_train_count} train, {original_test_count} test")
+                print(f"New time-based split: {len(train_cameras)} train, {len(test_cameras)} test")
+                
+                # Override the default camera lists for rendering
+                if not skip_train:
+                    render_func(dataset.model_path, dataset.load2gpu_on_the_fly, dataset.is_6dof, "train", scene.loaded_iter,
+                                train_cameras, gaussians, pipeline, background, deform)
+
+                if not skip_test:
+                    render_func(dataset.model_path, dataset.load2gpu_on_the_fly, dataset.is_6dof, "test", scene.loaded_iter,
+                                test_cameras, gaussians, pipeline, background, deform)
+                
+                return  # Skip the default rendering below
+                
+        # Default rendering with predefined train/test splits
         if not skip_train:
             render_func(dataset.model_path, dataset.load2gpu_on_the_fly, dataset.is_6dof, "train", scene.loaded_iter,
                         scene.getTrainCameras(), gaussians, pipeline,
@@ -347,10 +408,13 @@ if __name__ == "__main__":
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--mode", default='render', choices=['render', 'time', 'view', 'all', 'pose', 'original'])
+    parser.add_argument("--time_split", type=float, default=None, 
+                       help="If provided, split train/test by time index using this ratio (0-1)")
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.mode)
+    render_sets(model.extract(args), args.iteration, pipeline.extract(args), 
+               args.skip_train, args.skip_test, args.mode, args.time_split)
