@@ -16,7 +16,6 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.ode_loss_utils import compute_warmup_losses, compute_normal_losses, compute_continuous_warmup_losses, compute_continuous_normal_losses, compute_render_only_loss, compute_render_only_loss_warmup
 from utils.ode_sampling_utils import sample_ode_only_fids, sample_rendering_included_fids, sample_discrete_trajectories
 from utils.ode_load_utils import load_or_generate_trajectories, load_models
-from scene.forecast_ode_pc_encoder import PointPreservingSpUNetODEWrapper
 from utils.ode_eval_utils import perform_model_evaluation
 
 class TrainingState:
