@@ -1,1 +1,3 @@
 CUDA_VISIBLE_DEVICES=2 python train_set_encoder.py -s /media/staging1/dhwang/D-Nerf/data/bouncingballs -m output/set_nopretrain_spunet_lego --eval --is_blender
+
+CUDA_VISIBLE_DEVICES=3 python train_extrapolate_ode_render.py -s /media/staging1/dhwang/D-Nerf/data/bouncingballs -m output/baselines/balls_time_split --eval --iterations 40000 --log_directory long_exp/multi_scale_loss --var_inf --is_blender

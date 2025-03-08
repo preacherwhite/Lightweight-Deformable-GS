@@ -11,8 +11,8 @@ def perform_model_evaluation(transformer_ode, gaussians, pipe, background, datas
     """Evaluate model on training and validation data with multiple configurations."""
     torch.cuda.empty_cache()
     validation_configs = [
-        #{'name': 'val_full', 'cameras': val_cameras},
-        {'name': 'val_auto', 'cameras': val_cameras},
+        {'name': 'val_full', 'cameras': val_cameras},
+        #{'name': 'val_auto', 'cameras': val_cameras},
         # {'name': 'train_reconstruction', 'cameras': train_cameras},
         {'name': 'train_sliding_window', 'cameras': train_cameras}
     ]

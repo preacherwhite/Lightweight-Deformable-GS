@@ -1,7 +1,8 @@
 import torch
 from utils.loss_utils import l1_loss, ssim
+from pytorch_msssim import ms_ssim
 from gaussian_renderer import render_ode
-
+from utils.ode_sampling_utils import sample_discrete_trajectories
 def _compute_rendering_loss(viewpoint_cam, pred_values, batch_indices, trajectories_or_traj_gt, 
                            frame_idx, gaussians, pipe, background, xyz_only, dataset, opt, 
                            render_weight, deform=None, fid_val=None, total_gaussians=None, scales = None):
@@ -50,7 +51,6 @@ def _compute_rendering_loss(viewpoint_cam, pred_values, batch_indices, trajector
             new_xyz_render, new_rotation_render, new_scaling_render,
             dataset.is_6dof
         )
-        
         image = render_pkg["render"]
         gt_image = viewpoint_cam.original_image.cuda()
         l1 = l1_loss(image, gt_image)
@@ -58,6 +58,20 @@ def _compute_rendering_loss(viewpoint_cam, pred_values, batch_indices, trajector
         scaled_loss = rendering_loss * render_weight
         
         return scaled_loss, render_pkg
+    
+    elif len(scales) == 1 and scales[0] == 0:
+        render_pkg = render_ode(
+            viewpoint_cam, gaussians, pipe, background,
+            new_xyz_render, new_rotation_render, new_scaling_render,
+            dataset.is_6dof
+        )
+        image = render_pkg["render"]
+        gt_image = viewpoint_cam.original_image.cuda()
+        l1 = l1_loss(image, gt_image)
+        rendering_loss = (1.0 - opt.lambda_dssim) * l1 + opt.lambda_dssim * (1.0 - ms_ssim(image.unsqueeze(0), gt_image.unsqueeze(0)))
+        scaled_loss = rendering_loss * render_weight
+        return scaled_loss, render_pkg
+    
     else:
         if len(scales) == 1 and scales[0] < 0   :
             scales = []
@@ -65,12 +79,13 @@ def _compute_rendering_loss(viewpoint_cam, pred_values, batch_indices, trajector
             image_width = viewpoint_cam.image_width
             # compute times it takes to half the image size each time until 1x1
             scale = 1.0
-            while image_height > 2 and image_width > 2:
-                scale /= 2
+            while image_height > 4 and image_width > 4:
+                scale /= 4
                 scales.append(scale)
-                image_height /= 2
-                image_width /= 2
-        scaled_losses = []
+                image_height /= 4
+                image_width /= 4
+        
+        stacked_images = []
         for i in range(len(scales)):
             scale = scales[i]
             render_pkg = render_ode(
@@ -79,13 +94,15 @@ def _compute_rendering_loss(viewpoint_cam, pred_values, batch_indices, trajector
                 dataset.is_6dof, resize_factor=scale
             )
             image = render_pkg["render"]
-            gt_image = viewpoint_cam.original_image.cuda()
-            l1 = l1_loss(image, gt_image)
-            rendering_loss = (1.0 - opt.lambda_dssim) * l1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-            scaled_loss = rendering_loss * render_weight
-            scaled_losses.append(scaled_loss)
-        total_loss = torch.stack(scaled_losses).mean()
-        return total_loss, render_pkg
+            stacked_images.append(image)
+        
+        stacked_images = torch.stack(stacked_images, dim=0)
+        gt_image = viewpoint_cam.original_image.cuda()
+        gt_image = gt_image.repeat(stacked_images.shape[0], 1, 1, 1)
+        l1 = l1_loss(stacked_images, gt_image)
+        rendering_loss = (1.0 - opt.lambda_dssim) * l1 + opt.lambda_dssim * (1.0 - ssim(stacked_images, gt_image))
+        scaled_loss = rendering_loss * render_weight
+        return scaled_loss, render_pkg
 
 def compute_warmup_losses(loss, pred_traj_first, warmup_weight, render_weight, opt, 
                          train_cameras, viewpoint_indices, batch_indices, trajectories, 
@@ -224,3 +241,122 @@ def compute_continuous_normal_losses(loss, pred_traj, fids,
         total_loss = scaled_ode_loss
     
     return total_loss, scaled_ode_loss, scaled_render_loss, render_pkgs
+
+
+def compute_render_only_loss(transformer_ode, train_cameras, train_trajectories, gaussians, pipe, background, 
+                             xyz_only, dataset, opt, render_weight, total_gaussians, window_length, obs_length, 
+                             batch_size, rendering_scales=None):
+    """
+    Compute rendering loss using extrapolation over a sampled discrete trajectory.
+    
+    Args:
+        transformer_ode: The Transformer-ODE model
+        train_cameras: List of training cameras
+        train_trajectories: Ground truth trajectories
+        gaussians: Gaussian model
+        pipe: Pipeline parameters
+        background: Background tensor
+        xyz_only: Whether to use only XYZ coordinates
+        dataset: Dataset parameters
+        opt: Optimization parameters
+        render_weight: Weight for rendering loss
+        total_gaussians: Total number of gaussians
+        window_length: Length of the trajectory window
+        obs_length: Length of the observed trajectory
+        batch_size: Batch size for sampling
+        rendering_scales: Scales for multi-scale rendering
+    
+    Returns:
+        total_loss: Total rendering loss
+        avg_rendering_loss: Average rendering loss across frames
+        render_pkgs: List of rendering packages
+    """
+    # Sample discrete trajectories
+    obs_traj, target_traj, full_time, fids, viewpoint_indices, batch_indices = sample_discrete_trajectories(
+        train_cameras, train_trajectories, window_length, obs_length, batch_size, total_gaussians
+    )
+    
+    # Define observation and extrapolation times
+    obs_time = full_time[:, :obs_length]  # (1, obs_length)
+    extrapolate_time = full_time[:, obs_length:]  # (1, window_length - obs_length)
+    
+    # Extrapolate the full trajectory
+    pred_traj = transformer_ode.extrapolate(obs_traj, obs_time[0], extrapolate_time[0])  # (B, window_length, obs_dim)
+    
+    # Compute rendering loss for all predicted frames with corresponding viewpoints
+    rendering_losses = []
+    render_pkgs = []
+    
+    for t in range(window_length):
+        pred_at_t = pred_traj[:, t, :]  # (B, obs_dim)
+        viewpoint_idx = viewpoint_indices[t]
+        viewpoint_cam = train_cameras[viewpoint_idx]
+        
+        # Compute rendering loss for this frame
+        render_loss, render_pkg = _compute_rendering_loss(
+            viewpoint_cam, pred_at_t, batch_indices, train_trajectories,
+            t, gaussians, pipe, background, xyz_only, dataset, opt, 1.0,  # Use 1.0 as we average later
+            scales=rendering_scales
+        )
+        rendering_losses.append(render_loss)
+        render_pkgs.append(render_pkg)
+    
+    # Average rendering losses
+    avg_rendering_loss = torch.mean(torch.stack(rendering_losses)) if rendering_losses else torch.tensor(0.0, device="cuda")
+    total_loss = avg_rendering_loss * render_weight
+    
+    return total_loss, avg_rendering_loss, render_pkgs
+
+def compute_render_only_loss_warmup(transformer_ode, train_cameras, fids, batch_indices,
+                                   gaussians, deform, pipe, background, xyz_only,
+                                   dataset, opt, warmup_weight, render_weight, total_gaussians, rendering_scales=None):
+    """
+    Warmup version of rendering-only loss, using simpler extrapolation and fewer frames.
+    """
+    num_frames = min(3, len(train_cameras))
+    camera_indices = torch.randperm(len(train_cameras))[:num_frames]
+    selected_cameras = [train_cameras[idx] for idx in camera_indices]
+    selected_fids = [cam.fid.item() for cam in selected_cameras]
+
+    rendering_losses = []
+    render_pkgs = []
+    warmup_loss = 0.0
+
+    for cam_idx, (camera, fid_val) in enumerate(zip(selected_cameras, selected_fids)):
+        # Generate observation trajectory for extrapolation
+        time_input = torch.tensor([fid_val], device="cuda").expand(total_gaussians, -1)
+        with torch.no_grad():
+            if xyz_only:
+                d_xyz, _, _ = deform.step(gaussians.get_xyz.detach(), time_input)
+                obs_traj = (d_xyz + gaussians.get_xyz)[batch_indices].unsqueeze(1)
+            else:
+                d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input)
+                obs_traj = torch.cat([
+                    d_xyz + gaussians.get_xyz,
+                    d_rotation + gaussians.get_rotation,
+                    d_scaling + gaussians.get_scaling
+                ], dim=-1)[batch_indices].unsqueeze(1)
+
+        obs_time = torch.tensor([0.0], device="cuda")
+        extrapolate_time = torch.tensor([fid_val], device="cuda")
+        pred_traj = transformer_ode.extrapolate(obs_traj, obs_time, extrapolate_time)
+        frame_pred = pred_traj[:, -1, :]
+
+        # Compute warmup loss using transformer_only_reconstruction
+        warmup_loss_temp, _ = transformer_ode.transformer_only_reconstruction(obs_traj)
+        warmup_loss += warmup_loss_temp
+
+        # Render the frame
+        render_loss, render_pkg = _compute_rendering_loss(
+            camera, frame_pred, batch_indices, None, None,
+            gaussians, pipe, background, xyz_only, dataset, opt,
+            1.0, deform, fid_val, total_gaussians, scales=rendering_scales
+        )
+        rendering_losses.append(render_loss)
+        render_pkgs.append(render_pkg)
+
+    avg_rendering_loss = torch.mean(torch.stack(rendering_losses)) if rendering_losses else torch.tensor(0.0, device="cuda")
+    avg_warmup_loss = warmup_loss / num_frames if num_frames > 0 else torch.tensor(0.0, device="cuda")
+    total_loss = (avg_warmup_loss * warmup_weight) + (avg_rendering_loss * render_weight)
+
+    return total_loss, avg_warmup_loss, avg_rendering_loss, render_pkgs
