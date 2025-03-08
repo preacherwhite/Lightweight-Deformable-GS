@@ -146,7 +146,7 @@ def training(dataset, opt, pipe, num_testing_iterations, num_saving_iterations, 
              use_latent_ode_rnn=False, use_pc_encoder=False, use_transformer_baseline=False,
              voxel_size=0.05, spatial_shape=[128, 128, 128],
              rtol=1e-1, atol=1e-1, use_tanh=False, num_active_odes=-1, min_lr=0, rendering_scales=None,
-             starting_gap=100, min_gap=10, decrease_gap_factor=0.5, time_split=0.8):
+             starting_gap=100, min_gap=10, decrease_gap_factor=0.5, time_split=0.8, max_extrapolation_portion=0.2):
     """
     Main training function with alternating trajectory-only and rendering-only modes.
     """
@@ -177,7 +177,8 @@ def training(dataset, opt, pipe, num_testing_iterations, num_saving_iterations, 
     min_fid = train_cameras[0].fid.item()
     max_fid = train_cameras[-1].fid.item()
     print("Fid range:", min_fid, max_fid)
-    
+    max_extrapolation_time = (max_fid - min_fid) * max_extrapolation_portion
+    print("Max extrapolation time:", max_extrapolation_time)
     # Progress tracking
     iter_start = torch.cuda.Event(enable_timing=True)
     iter_end = torch.cuda.Event(enable_timing=True)
@@ -226,7 +227,7 @@ def training(dataset, opt, pipe, num_testing_iterations, num_saving_iterations, 
         if continuous_time_sampling:
             if training_state.should_train_simultaneously():
                 fids, selected_fids, selected_cam_indices = sample_rendering_included_fids(
-                    train_cameras, min_fid, max_fid, window_length, obs_length
+                    train_cameras, min_fid, max_fid, window_length, obs_length, max_extrapolation_time
                 )
                 traj_gt = generate_continuous_trajectories(deform, fids, gaussians, xyz_only)
                 batch_indices = sample(range(total_gaussians), min(batch_size, total_gaussians))
@@ -252,7 +253,7 @@ def training(dataset, opt, pipe, num_testing_iterations, num_saving_iterations, 
                     )
             else:
                 if training_state.is_trajectory_mode:
-                    fids = sample_ode_only_fids(min_fid, max_fid, window_length)
+                    fids = sample_ode_only_fids(train_cameras, min_fid, max_fid, window_length, obs_length, max_extrapolation_time)
                     traj_gt = generate_continuous_trajectories(deform, fids, gaussians, xyz_only)
                     batch_indices = sample(range(total_gaussians), min(batch_size, total_gaussians))
                     traj_gt = traj_gt[:, batch_indices]
@@ -500,6 +501,7 @@ if __name__ == "__main__":
     parser.add_argument('--min_gap', type=int, default=10)
     parser.add_argument('--decrease_gap_factor', type=float, default=0.95)
     parser.add_argument('--time_split', type=float, default=0.8)
+    parser.add_argument('--max_extrapolation_portion', type=float, default=0.25)
     # Logging
     parser.add_argument('--log_directory', type=str, default=None)
     args = parser.parse_args(sys.argv[1:])
@@ -537,5 +539,5 @@ if __name__ == "__main__":
         args.voxel_size, args.spatial_shape,
         args.rtol, args.atol, args.use_tanh, args.num_active_odes,
         args.min_lr, args.rendering_scales,
-        args.starting_gap, args.min_gap, args.decrease_gap_factor, args.time_split
+        args.starting_gap, args.min_gap, args.decrease_gap_factor, args.time_split, args.max_extrapolation_portion
     )
