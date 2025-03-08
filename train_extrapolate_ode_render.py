@@ -4,9 +4,7 @@ from random import sample
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from scene.forecast_ode_transformer import TransformerLatentODEWrapper
-from scene.forecast_ode_contiformer import ContiformerLatentODEWrapper
 from scene.forecast_transformer import AutoregressiveTransformer
-from scene.forecast_ode_rnn import ODE_RNN_Model
 from scene.forecast_ode_var_rnn import LatentODERNN
 import numpy as np
 from argparse import ArgumentParser, Namespace
@@ -65,46 +63,7 @@ def setup_training(dataset, gaussians, train_gaussians, opt,
                    rtol, atol, use_tanh, num_active_odes):
     """Set up training configurations and optimizers."""
     obs_dim = 3 if dataset.xyz_only else 10
-    if use_pc_encoder:
-        print("Using PointPreservingSpUNetODEWrapper")
-        transformer_ode = PointPreservingSpUNetODEWrapper(
-            latent_dim=latent_dim,
-            d_model=d_model,
-            nhead=nhead,
-            num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers,
-            ode_nhidden=ode_nhidden,
-            decoder_nhidden=decoder_nhidden,
-            obs_dim=obs_dim,
-            noise_std=noise_std,
-            ode_layers=ode_layers,
-            reg_weight=reg_weight,
-            variational_inference=variational_inference,
-            use_torchode=use_torchode,
-            use_rnn=use_latent_ode_rnn,
-            voxel_size=voxel_size,
-            spatial_shape=spatial_shape,
-            rtol=rtol,
-            atol=atol,
-            use_tanh=use_tanh,
-            num_active_odes=num_active_odes
-        ).cuda()
-    elif use_contiformer:
-        print("Using ContiformerLatentODEWrapper")
-        transformer_ode = ContiformerLatentODEWrapper(
-            latent_dim=latent_dim, d_model=d_model, nhead=nhead, num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers, ode_nhidden=ode_nhidden, decoder_nhidden=decoder_nhidden,
-            obs_dim=obs_dim, noise_std=noise_std, ode_layers=ode_layers, rtol=rtol, atol=atol, use_tanh=use_tanh
-        ).cuda()
-    elif use_ode_rnn:
-        print("Using ODE_RNN_Model")
-        transformer_ode = ODE_RNN_Model(
-            latent_dim=latent_dim, d_model=d_model, nhead=nhead, num_decoder_layers=num_decoder_layers,
-            ode_nhidden=ode_nhidden, decoder_nhidden=decoder_nhidden, obs_dim=obs_dim, ode_layers=ode_layers, 
-            reg_weight=reg_weight, variational_inference=variational_inference, use_torchode=use_torchode,
-            rtol=rtol, atol=atol, use_tanh=use_tanh
-        ).cuda()
-    elif use_latent_ode_rnn:
+    if use_latent_ode_rnn:
         print("Using LatentODERNN")
         transformer_ode = LatentODERNN(
             latent_dim=latent_dim, rec_dim=d_model, num_decoder_layers=num_decoder_layers,
